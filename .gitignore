@@ -1,0 +1,56 @@
+# 敏感配置(包含 API key,绝对不能推)
+.env
+.env.local
+.env.*.local
+
+# Python 编译产物
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# 测试与构建
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+
+# IDE 与系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# 索引与生成产物(运行 scripts/run_step2.py 重新生成)
+chroma_db/
+bm25.pkl
+*.pkl
+datasets/
+
+# 数据文件(15万 issue 不放仓库)
+data/
+*.parquet
+*.jsonl.gz
+
+# 面试准备私有笔记
+八股/
+
+# 日志
+*.log
+logs/
