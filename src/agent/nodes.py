@@ -48,7 +48,7 @@ _PROMPTS = {
     "decision_system": _load_prompt("decision_system"),
 }
 
-# LLM转化成dict
+# LLM 输出转化成 dict
 def _parse_json(text: str, fallback: dict) -> dict:
     """输入 LLM 原始输出和 fallback，输出解析后的 JSON dict，失败时返回 fallback。"""
     # DeepSeek 容易包一层 ```json，这里先剥掉代码块，降低格式漂移造成的解析失败。————>先去东西，再search
@@ -104,22 +104,30 @@ def configure_dependencies(retriever: Any, reranker: Any) -> None:
 
 
 def query_analysis_node(state: IssueState) -> dict:
-    """输入 IssueState，调用 LLM 改写 query，输出 rewritten_query、keywords、component。"""
+    """输入 IssueState，调用 LLM 结构化改写 query，输出 rewritten_query、keywords、component。"""
     logger.info("进入 Query Analysis 节点")
     if _llm is None:
         raise RuntimeError("LLM 未初始化，请先在 graph.py 中配置节点依赖")
 
-    # 重试时只带最近一轮低置信度结果，让 LLM 换角度改写，而不是机械复述原 query。
+    # 重试时带上最近一轮决策和可程序计算的检索诊断，帮助 LLM 有依据地调整 query。
     previous_decisions = state.get("previous_decisions", [])
     retry_block = ""
     if previous_decisions:
-        # 取最新的decision
+        # 只取最近一轮，避免重试 prompt 随轮次持续膨胀。
         last = previous_decisions[-1]
-        # 填充字符串————>填充retry_prompt
         retry_block = _PROMPTS["query_analysis_retry"].format(
             last_query=last.get("rewritten_query", ""),
+            last_keywords=json.dumps(last.get("keywords", []), ensure_ascii=False),
+            last_component=last.get("component"),
             last_confidence=last.get("confidence", ""),
             last_decision=last.get("decision", ""),
+            last_related_issues=json.dumps(last.get("related_issues", []), ensure_ascii=False),
+            last_reasoning=last.get("reasoning", ""),
+            retrieved_count=last.get("retrieved_count", 0),
+            candidate_count=last.get("candidate_count", 0),
+            missing_evidence_count=last.get("missing_evidence_count", 0),
+            top_score=last.get("top_score"),
+            score_gap=last.get("score_gap"),
         )
 
     # System 放稳定规则，User 放变量数据；这样 prompt 更清晰，也方便后续缓存系统提示词。
@@ -134,14 +142,34 @@ def query_analysis_node(state: IssueState) -> dict:
     fallback = {"rewritten_query": state["raw_issue"], "keywords": [], "component": None}
     parsed = _parse_json(response.content, fallback=fallback)
 
-    # 对 LLM 输出做轻量兜底，避免字段缺失导致后续检索节点 KeyError。
-    keywords = parsed.get("keywords", [])
-    if not isinstance(keywords, list):
-        keywords = []
+    # 程序只能保证字段形状和 fallback，不能保证 LLM 改写的语义一定正确。
+    rewritten_query = parsed.get("rewritten_query")
+    if not isinstance(rewritten_query, str) or not rewritten_query.strip():
+        rewritten_query = state["raw_issue"]
+    else:
+        rewritten_query = rewritten_query.strip()
+
+    keywords = []
+    raw_keywords = parsed.get("keywords", [])
+    if isinstance(raw_keywords, list):
+        for keyword in raw_keywords:
+            if not isinstance(keyword, str) or not keyword.strip():
+                continue
+            normalized = keyword.strip()
+            if normalized not in keywords:
+                keywords.append(normalized)
+    keywords = keywords[:8]
+
+    component = parsed.get("component")
+    if not isinstance(component, str) or not component.strip():
+        component = None
+    else:
+        component = component.strip()
+
     result = {
-        "rewritten_query": parsed.get("rewritten_query", state["raw_issue"]),
+        "rewritten_query": rewritten_query,
         "keywords": keywords,
-        "component": parsed.get("component"),
+        "component": component,
     }
 
     logger.info("退出 Query Analysis 节点：query={}", result["rewritten_query"][:80])
@@ -224,13 +252,37 @@ def decision_node(state: IssueState) -> dict:
         related_issues = []
     reasoning = parsed.get("reasoning", "")
 
-    # 真实维护 previous_decisions，供后续低置信度 retry 时 Query Analysis 反思使用。
+    # 记录上轮结果和检索诊断。分数只提供相对线索，不视为已校准概率。
+    retrieved_docs = state.get("retrieved_docs", [])
+    reranked_docs = state.get("reranked_docs", [])
+    top_scores = [
+        float(doc.get("rerank_score", 0.0))
+        for doc in reranked_docs
+    ]
+    missing_evidence_count = sum(
+        not str(doc.get("title", "")).strip() and not str(doc.get("body", "")).strip()
+        for doc in reranked_docs
+    )
+
     history = state.get("previous_decisions", []).copy()
     history.append(
         {
             "rewritten_query": state["rewritten_query"],
+            "keywords": state.get("keywords", []),
+            "component": state.get("component"),
             "confidence": confidence,
             "decision": decision,
+            "related_issues": related_issues,
+            "reasoning": reasoning,
+            "retrieved_count": len(retrieved_docs),
+            "candidate_count": len(reranked_docs),
+            "missing_evidence_count": missing_evidence_count,
+            "top_score": top_scores[0] if top_scores else None,
+            "score_gap": (
+                top_scores[0] - top_scores[1]
+                if len(top_scores) >= 2
+                else None
+            ),
         }
     )
 
