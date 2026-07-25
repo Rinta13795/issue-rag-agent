@@ -1,0 +1,30 @@
+{
+  "benchmark_id": "dual-query-retrieval-v1",
+  "status": "draft_not_run",
+  "description": "比较只使用 rewritten_query 与 rewritten_query + raw_issue 双路召回的检索质量和成本。",
+  "case_rules": [
+    "raw_issue 必须是不会在当前索引中自召回的新 Issue 文本。",
+    "rewritten_query 必须固定保存，不能在两种变体运行时重新调用 LLM。",
+    "component 必须固定保存；两个变体使用相同值，无法确认时填写 null。",
+    "优先收集真实 Query Analysis 输出，其中既要有正常改写，也要有已确认的语义漂移。",
+    "expected_duplicate_ids 必须经过人工确认，并且确实存在于当前 Vector 和 BM25 使用的语料版本中。",
+    "案例应记录 project 和 query_analysis_version，防止以后无法解释数据来源。",
+    "只有 status=verified 的案例会进入正式运行。"
+  ],
+  "cases": [
+    {
+      "id": "example-dual-query-001",
+      "status": "draft_example_only",
+      "project": "replace-with-project",
+      "raw_issue": "Replace with a manually curated new issue that has a verified historical duplicate.",
+      "rewritten_query": "Replace with the fixed Query Analysis output for that raw issue.",
+      "component": null,
+      "expected_duplicate_ids": [
+        "replace-with-real-historical-issue-id"
+      ],
+      "query_analysis_version": "replace-with-prompt-or-commit-version",
+      "case_type": "rewrite_drift",
+      "notes": "示例不会执行；人工确认全部字段后改成 verified。"
+    }
+  ]
+}

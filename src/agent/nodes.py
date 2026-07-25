@@ -259,10 +259,11 @@ def query_analysis_node(state: IssueState) -> dict:
 
 
 def retrieval_node(state: IssueState) -> dict:
-    """使用 rewritten_query 做混合召回，并把候选列表写入 retrieved_docs。
+    """使用改写 Query 与原始 Issue 双路召回，并把融合结果写入 retrieved_docs。
 
     进入本节点时，Query Analysis 已经向 State 写入 rewritten_query 和 component。
-    HybridRetriever 内部依次执行 Vector、BM25，再使用 RRF 融合两路排名。
+    每个 query 内部先融合 Vector 与 BM25；然后再融合两个 query 的候选排名。
+    原文这一路用于降低 LLM 改写语义漂移导致真正 duplicate 完全漏召回的风险。
     """
     logger.info("进入 Retrieval 节点")
 
@@ -275,10 +276,13 @@ def retrieval_node(state: IssueState) -> dict:
     # HybridRetriever 只把该条件交给 Vector；BM25 始终在完整语料中查询。
     filter_dict = {"component": state["component"]} if state.get("component") else None
 
-    # 两路检索都使用 rewritten_query。HYBRID_TOP_K 控制 RRF 融合后保留的候选数。
-    # 当前 keywords 没有单独传给 BM25，这一点不要从字段名称推断错。
-    docs = _retriever.search(
-        query=state["rewritten_query"],
+    # rewritten_query 放在第一路，raw_issue 放在第二路：
+    # - 改写 query 提供更集中的技术检索表达；
+    # - 原文保留错误码、版本号和模型可能删改的原始细节，作为兜底。
+    # search_queries 会去除相同 query，所以改写失败并回退原文时不会重复检索。
+    # 当前 keywords 仍没有单独传给 BM25，这一点不要从字段名称推断错。
+    docs = _retriever.search_queries(
+        queries=[state["rewritten_query"], state["raw_issue"]],
         top_k=HYBRID_TOP_K,
         filter_dict=filter_dict,
     )
@@ -286,7 +290,7 @@ def retrieval_node(state: IssueState) -> dict:
     logger.info("退出 Retrieval 节点：retrieved_docs={}", len(docs))
 
     # docs 中每项通常包含 id/title/body/metadata/score；
-    # 其中 score 是 RRF 融合分，不是原始向量分数或 BM25 分数。
+    # 其中 score 是双层 RRF 最终融合分，不是原始向量分数、BM25 分数或概率。
     return {"retrieved_docs": docs}
 
 

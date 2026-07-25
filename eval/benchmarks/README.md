@@ -100,3 +100,110 @@ Benchmark ID：retry-context-v1
 运行状态：NOT RUN
 当前不能声明：召回率、分类准确率或 retry recovery 已提升
 ```
+
+---
+
+# 单项改动 Benchmark：原文与改写双路召回
+
+## 这次测什么
+
+生产检索现在有两个变体：
+
+| 变体 | 检索输入 |
+| --- | --- |
+| `single_rewritten` | 只使用固定的 `rewritten_query` |
+| `dual_query` | 分别使用 `rewritten_query` 和 `raw_issue`，再用外层 RRF 融合 |
+
+Benchmark 要回答三个问题：
+
+1. 原文兜底是否提高 Retrieval Top-30 的 Recall 和 Hit Rate；
+2. 新召回的正确候选经过现有 Reranker 后，是否仍能留在 Top-10；
+3. 双倍检索带来的延迟是否可以接受，以及是否出现原先能命中、双路反而漏掉的退化案例。
+
+这不是 Prompt 对比。案例直接保存固定的 `rewritten_query`，运行时不调用 Query Analysis
+LLM，从而把唯一实验变量限制为“是否增加 raw_issue 检索”。
+
+## 为什么同时测 Retrieval 和 Rerank
+
+只看 Retrieval Top-30 可能得到虚假的乐观结论：原文虽然把正确 Issue 捞进候选池，
+但后面的 Reranker 仍使用 `rewritten_query` 打分，正确 Issue 可能再次被删掉。因此报告同时包含：
+
+- Retrieval：Hit Rate、Recall、MRR、nDCG@10；
+- Rerank：Top-5/10 Hit Rate、Recall、MRR、nDCG@10；
+- Safety：`rescue` 和 `regression` 的案例数与比例；
+- Cost：平均、P50、P95 总延迟，以及 Retrieval/Rerank 分段平均延迟。
+
+其中：
+
+- `rescue`：单路没有命中，但双路命中；
+- `regression`：单路能够命中，但双路没有命中。
+
+不能只报告平均 Recall 上升，也必须检查 `regression_count` 和延迟。
+
+## 案例要求
+
+案例保存在 `eval/benchmarks/data/dual_query_cases.json`。当前只有不会执行的草稿示例。
+建议准备至少 30–50 条人工确认案例，并按下列类型分组：
+
+- `rewrite_drift`：改写增加了原文没有的根因或删掉关键实体；
+- `rewrite_good`：改写准确，用于检查原文噪声是否导致退化；
+- `rewrite_fallback`：改写为空或格式失败，最终等于原文；
+- `long_noisy_raw`：原始 Issue 很长、日志噪声很多；
+- `exact_entity`：包含错误码、类名、函数名或版本号。
+
+每条案例必须固定保存：
+
+```text
+raw_issue
+rewritten_query
+component
+expected_duplicate_ids
+project
+query_analysis_version
+case_type
+```
+
+`component` 在两个变体中保持相同，无法确认时填 `null`。`expected_duplicate_ids` 必须存在于
+本次使用的索引中；只有人工核验后才能把状态改成 `verified`。同一个真实 Query Analysis
+版本应同时收集成功和失败样本，不能只挑双路有利的案例。报告会按 `case_type` 分组，
+用来区分双路召回对改写漂移和正常改写分别产生的影响。Runner 启动后还会检查标注 ID
+是否存在于当前 BM25 索引；存在不可达目标时直接停止，不会把它错误计为检索失败。
+
+## 运行方式
+
+准备好 verified 案例后运行：
+
+```bash
+python -m eval.benchmarks.dual_query_retrieval run \
+  --repeats 3 \
+  --output eval_results/dual_query_retrieval.json
+```
+
+脚本会加载真实 Vector、BM25 和 Reranker，但不会调用 LLM。`--repeats 3` 主要用于让延迟
+统计更稳定；排名结果本身通常是确定的。
+
+## 建议的通过条件
+
+在正式案例数量足够前，不应填写具体阈值。第一版可以先采用方向性门槛：
+
+```text
+Retrieval Recall@30：双路不得低于单路，且 rewrite_drift 子集应有明确提升
+Rerank Hit Rate@10：提升必须能保留到精排之后
+Regression Rate：逐条审查，不能只被平均值掩盖
+P95 延迟：记录增幅，再结合服务目标决定是否接受
+```
+
+如果 Retrieval Recall 上升但 Rerank Top-10 没有改善，下一步应检查 Reranker 使用
+`rewritten_query` 是否把原文召回的正确候选再次压低，而不是直接宣布双路方案有效。
+
+## 当前状态
+
+```text
+Benchmark ID：dual-query-retrieval-v1
+目标改动：增加 raw_issue 兜底召回，并与 rewritten_query 结果做外层 RRF
+修改前行为：single_rewritten
+修改后行为：dual_query
+案例状态：尚未人工标注
+运行状态：NOT RUN
+当前不能声明：Recall、Rerank 命中率或端到端准确率已经提升
+```
