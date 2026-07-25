@@ -1,4 +1,14 @@
-"""LangGraph 节点函数：实现 Query Analysis、Retrieval、Rerank、Decision 四个节点。"""
+"""LangGraph 工作流的节点实现。
+
+本文件负责四个阶段：
+1. Query Analysis：把用户提交的原始 Issue 改写成适合检索的结构化信息；
+2. Retrieval：从向量索引和 BM25 索引中召回候选 Issue；
+3. Rerank：对召回结果重新排序并缩小候选范围；
+4. Decision：根据候选证据判断 duplicate、similar 或 new。
+
+节点之间不直接互相调用，而是通过 IssueState 读取上一阶段的数据并返回新增字段，
+再由 LangGraph 负责合并 State 和决定下一个节点。
+"""
 
 import json
 import re
@@ -20,79 +30,120 @@ from config import (
 from src.agent.state import IssueState
 
 
+# 这三个对象是节点运行时依赖：
+# - _retriever：供 Retrieval 节点执行混合检索；
+# - _reranker：供 Rerank 节点给候选 Issue 重新打分；
+# - _llm：供 Query Analysis 和 Decision 节点调用大模型。
+#
+# 模块刚被导入时它们还没有初始化，所以初始值是 None。graph.py 构建工作流时会先调用
+# configure_dependencies() 填入真实对象，之后每次节点执行都复用同一组实例，避免重复加载模型。
 _retriever: Any | None = None
 _reranker: Any | None = None
 _llm: ChatOpenAI | None = None
 
+# __file__ 表示当前 nodes.py 的路径；parent 取出其所在的 src/agent 目录，
+# 因此这里最终指向 src/agent/prompts，后续可以只用 prompt 名称读取对应文件。
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
 def _load_prompt(name: str) -> str:
-    """输入 prompt 名称，输出剥离 YAML frontmatter 后的 markdown prompt 正文。"""
-    # prompt 用 markdown 管理，方便面试时展示和后续单独迭代；运行时只取正文给 LLM。
+    """读取一个 Markdown Prompt，并返回真正需要发送给 LLM 的正文。
+
+    例如传入 ``query_analysis_system``，会读取
+    ``src/agent/prompts/query_analysis_system.md``。
+    """
+    # Prompt 独立存成 Markdown，方便阅读、版本对比和单独修改，不必把长文本硬编码在 Python 中。
     prompt_path = _PROMPTS_DIR / f"{name}.md"
     text = prompt_path.read_text(encoding="utf-8")
 
-    # markdown 文件开头的 YAML frontmatter 是给人和版本管理看的，不能喂给模型干扰输出。
+    # 部分 Prompt 文件开头有一段由 --- 包围的 YAML frontmatter，例如版本、用途等元数据。
+    # 这些内容是给开发者和版本管理看的，不属于模型指令，因此发送给 LLM 前要去掉。
     if text.startswith("---\n"):
+        # 从第一个 --- 之后开始寻找结束标记；end 是结束标记在整段文本中的位置。
         end = text.find("\n---\n", 4)
         if end != -1:
-            # 处理到只留下正文
+            # 跳过结束标记，只保留它后面的 Prompt 正文。
             text = text[end + len("\n---\n"):]
+
+    # 去掉正文开头和结尾多余的空白、换行，避免无意义字符进入 Prompt。
     return text.strip()
 
 
+# 模块导入时一次性读取三个 Prompt 并缓存在字典中。
+# 后面的节点通过 _PROMPTS["名称"] 直接取正文，不需要在每次请求时重复读文件。
 _PROMPTS = {
     "query_analysis_system": _load_prompt("query_analysis_system"),
     "query_analysis_retry": _load_prompt("query_analysis_retry"),
     "decision_system": _load_prompt("decision_system"),
 }
 
-# LLM 输出转化成 dict
+
 def _parse_json(text: str, fallback: dict) -> dict:
-    """输入 LLM 原始输出和 fallback，输出解析后的 JSON dict，失败时返回 fallback。"""
-    # DeepSeek 容易包一层 ```json，这里先剥掉代码块，降低格式漂移造成的解析失败。————>先去东西，再search
+    """把 LLM 返回的 JSON 文本转成 Python dict，无法解析时返回备用值。
+
+    ``text`` 是模型的原始回复；``fallback`` 是调用方准备的安全默认结果。
+    这个函数只解决输出格式问题，不能判断模型生成的内容在语义上是否正确。
+    """
+    # 第一步：清除回复首尾空白，以及模型可能额外包上的 ```json ... ``` 代码块标记。
+    # 例如 ```json\n{"keywords": ["crash"]}\n``` 会先变成 {"keywords": ["crash"]}。
     cleaned = text.strip()
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*```$", "", cleaned)
 
-    # 只抓第一个 JSON 对象，避免模型在 JSON 前后夹杂解释文本时直接解析失败。
+    # 第二步：从清理后的回复中截取由 { 和 } 包围的候选 JSON。
+    # 这样即使模型在 JSON 前后写了少量说明，也仍有机会解析中间的对象。
     match = re.search(r"\{[\s\S]*\}", cleaned)
     if not match:
+        # 连候选 JSON 对象都找不到时，不让节点崩溃，直接交回调用方提供的 fallback。
         logger.warning("LLM 输出未找到 JSON 对象，使用 fallback：{}", text[:200])
         return fallback
 
     try:
+        # json.loads 完成“JSON 字符串 -> Python 字典”的转换。
         return json.loads(match.group(0))
     except json.JSONDecodeError as exc:
+        # 找到了大括号但内容不是合法 JSON，例如使用单引号或缺少逗号时，也使用 fallback。
         logger.warning("LLM JSON 解析失败：{}，使用 fallback。原文：{}", exc, text[:200])
         return fallback
 
 
 def _format_candidates(docs: list[dict]) -> str:
-    """输入 reranked_docs，输出 Decision prompt 中展示候选 issue 的文本块。"""
-    # 没有候选时显式告诉 LLM，避免它凭空编造 related_issues。
+    """把 reranked_docs 整理成 Decision LLM 能阅读的候选 Issue 文本。"""
+    # 没有候选时明确写入“无候选”，让 Decision 知道检索结果为空，
+    # 并减少模型凭空编造 related_issues 的可能性。
     if not docs:
         return "（无候选 issue）"
 
-    # 候选内容来自外部 issue，只作为判断依据展示；body 截断避免 prompt 过长和注入噪声过多。
+    # 每个候选会展示 ID、Reranker 分数、标题和正文摘要。
+    # rows 中一项对应一个候选，最后再用空行连接，便于模型区分不同 Issue。
     rows = []
     for doc in docs:
         rows.append(
+            # id 使用 doc['id']：它是候选必须具备的字段，缺失时应立即暴露上游数据问题。
+            # rerank_score 使用 get(..., 0.0)：缺失时仍能格式化，但 0.0 只是展示默认值。
             f"[issue_id={doc['id']}] rerank_score={doc.get('rerank_score', 0.0):.3f}\n"
             f"title: {doc.get('title', '')}\n"
+            # body 最多展示前 200 个字符，控制 Prompt 长度；因此 Decision 看到的不是完整正文。
             f"body: {doc.get('body', '')[:200]}..."
         )
     return "\n\n".join(rows)
 
-# 各组块逻辑分开
+
 def configure_dependencies(retriever: Any, reranker: Any) -> None:
-    """输入已初始化的 retriever/reranker，供节点函数复用，避免节点内重复加载模型。"""
+    """在工作流启动时一次性注入检索器、重排器，并初始化 LLM 客户端。
+
+    graph.py 会先创建 HybridRetriever 和 Reranker，再把它们传入这里。节点函数随后通过
+    模块级变量使用这些依赖，而不需要把大型对象放进 IssueState，也不会每轮重新加载。
+    """
+    # global 表示下面赋值的是文件顶部的三个模块级变量，而不是创建同名局部变量。
     global _retriever, _reranker, _llm
+
+    # retriever 和 reranker 已由 graph.py 初始化完成，这里保存引用供对应节点复用。
     _retriever = retriever
     _reranker = reranker
 
-    # LLM 也在依赖配置阶段初始化一次，避免每个节点调用时反复创建客户端。
+    # ChatOpenAI 是兼容 OpenAI 接口的客户端；通过 base_url 和模型配置连接 DeepSeek。
+    # Query Analysis 与 Decision 共用这个客户端，避免每个节点执行时重复创建。
     _llm = ChatOpenAI(
         model=DEEPSEEK_MODEL,
         api_key=DEEPSEEK_API_KEY,
@@ -124,11 +175,12 @@ def query_analysis_node(state: IssueState) -> dict:
         last = previous_decisions[-1]
 
         # 将 history 中的值填入 query_analysis_retry.md 的同名占位符。
-        # json.dumps 把 Python 列表变成清晰的 JSON 文本；ensure_ascii=False 保留中文。
+        # json.dumps 把 Python 列表变成清晰的 JSON 文本（ Python ——> LLM需要的JSON文本）；ensure_ascii=False 保留中文。
         retry_block = _PROMPTS["query_analysis_retry"].format(
             # 上一轮 Query Analysis 生成的检索表达。
             last_query=last.get("rewritten_query", ""),
             last_keywords=json.dumps(last.get("keywords", []), ensure_ascii=False),
+            # component ——> 小范围功能过滤条件
             last_component=last.get("component"),
             # 上一轮 Decision LLM 返回的判断。
             last_confidence=last.get("confidence", ""),
