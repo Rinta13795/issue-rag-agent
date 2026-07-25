@@ -1,0 +1,29 @@
+{
+  "benchmark_id": "retry-context-v1",
+  "status": "draft_not_run",
+  "description": "验证诊断信息是否让低置信度重试产生更有效且更忠实的检索 query。",
+  "case_rules": [
+    "案例必须是不会在当前索引中产生 query 自召回的新文本。",
+    "expected_duplicate_ids 必须已人工确认且存在于当前索引。",
+    "required_terms 必须直接来自 raw_issue，不能由模型推测。",
+    "forbidden_terms 只填写已知不能凭空出现的根因、错误码或组件。",
+    "只有 status=verified 的案例会进入正式运行。"
+  ],
+  "cases": [
+    {
+      "id": "example-retry-001",
+      "status": "draft_example_only",
+      "raw_issue": "Replace this text with a manually curated new issue.",
+      "expected_duplicate_ids": [
+        "replace-with-real-historical-issue-id"
+      ],
+      "required_terms": [
+        "replace-with-verifiable-term"
+      ],
+      "forbidden_terms": [
+        "replace-with-known-unsupported-term"
+      ],
+      "notes": "示例字段，不会被 Benchmark 执行；人工核验后改为 verified。"
+    }
+  ]
+}
