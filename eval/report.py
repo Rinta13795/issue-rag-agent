@@ -73,4 +73,13 @@ if __name__ == "__main__":
     if not results:
         print(f"未找到评估结果，请先运行：python -m eval.run_eval")
     else:
+        # 先打印评估元信息（样本量、抽样方式、是否剔除自命中），
+        # 避免把抽样结果误当成全量结果引用。
+        meta = results.get("_meta")
+        if meta:
+            print(
+                f"评估范围：test set 全量 {meta.get('test_set_total', '?')} 条，"
+                f"本次 {meta.get('evaluated_queries', '?')} 条（{meta.get('sampling', '?')}）；"
+                f"自命中剔除={meta.get('self_hit_excluded', '?')}"
+            )
         print_table(results)

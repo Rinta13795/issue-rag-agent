@@ -2,6 +2,17 @@
 
 这份文档用于指导你亲自沿真实调用关系阅读项目。它不是审计报告，也不替你给出所有结论。建议每完成一条路径，就把“建议产出”保存到自己的学习笔记，再进入下一条。
 
+> **v2 阅读提示**：本文写于 v1，阅读路径依然成立，但以下 v1 结论在 v2 中已经改变，
+> 对照 [IMPROVEMENTS.md](../IMPROVEMENTS.md) 阅读：
+>
+> 1. “已提交基线 vs 工作区实验”的区分不再存在——v2 中 `eval/` 等全部已提交。
+> 2. “BM25-only 候选没有 title/body” → 已由 `src/docstore.py` 融合后补齐。
+> 3. “keywords 不参与检索” → 已作为 extra_terms 传给 BM25。
+> 4. “Decision 输出无程序级校验” → 已有枚举/confidence 截断/related_issues 白名单。
+> 5. “重试只读 query/decision/confidence” → 重试 prompt 已携带上轮 Top-3 候选。
+> 6. “Golden Set 未过滤不可达目标、随机 query 级划分、nDCG IDCG 有误” → 均已修复。
+> 7. 新增在线入口：`main.py`（CLI）与 `api.py`（FastAPI）；`run_agent` 的图已缓存。
+
 ## 使用说明
 
 当前仓库有两类事实，阅读时必须分开：
