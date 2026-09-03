@@ -53,8 +53,8 @@ CHUNK_SIZE = 500
 # 文本切分重叠长度：保留段落边界上下文。
 CHUNK_OVERLAP = 80
 
-# 文本切分分隔符：用于 RecursiveCharacterTextSplitter 递归切分。
-CHUNK_SEPARATORS = ["\n\n", "\n", "。", ".", "!", "?", ";", ";"]
+# 文本切分分隔符：优先保留段落/行/句子边界，最后用空字符按字符数兜底。
+CHUNK_SEPARATORS = ["\n\n", "\n", "。", ".", "!", "?", "；", ";", " ", ""]
 
 
 # 向量检索 TopK：单路召回数量，保证召回覆盖。

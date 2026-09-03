@@ -91,8 +91,41 @@ def normalize(raw_issue: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_inline_text(value: Any) -> str:
+    """清洗 title 等单行文本，输出压缩连续空白后的单行字符串。"""
+    text_without_html = BeautifulSoup(str(value), "html.parser").get_text(" ")
+    return re.sub(r"\s+", " ", html.unescape(text_without_html)).strip()
+
+
+def _normalize_body_text(value: Any) -> str:
+    """清洗 body 并保留段落与行边界，输出统一使用 ``\n`` 的字符串。"""
+    normalized = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    soup = BeautifulSoup(normalized, "html.parser")
+
+    # 将 HTML 块级边界恢复为换行，同时避免给 code/strong 等行内标签强行换行。
+    for tag in soup.find_all("br"):
+        tag.replace_with("\n")
+    for tag in soup.find_all(
+        ["p", "div", "li", "pre", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6"]
+    ):
+        tag.insert_before("\n")
+        tag.insert_after("\n")
+
+    text_without_html = soup.get_text("")
+    unescaped_text = html.unescape(text_without_html).replace("\r\n", "\n").replace("\r", "\n")
+
+    # 保留 body 的段落/换行结构：RecursiveCharacterTextSplitter 会优先按
+    # \n\n / \n 切分，error log 识别也依赖行边界，因此这里不能压成单行。
+    normalized_lines = [
+        re.sub(r"[^\S\n]+", " ", line).strip()
+        for line in unescaped_text.split("\n")
+    ]
+    structured_text = "\n".join(normalized_lines)
+    return re.sub(r"\n{3,}", "\n\n", structured_text).strip()
+
+
 def clean(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """输入 normalize 后的 issue 列表，输出去 HTML、解码实体、压缩空白并过滤无效 issue 后的列表。"""
+    """输入 normalize 后的 issue 列表，输出清洗文本并过滤无效 issue 后的列表。"""
     cleaned_issues: list[dict[str, Any]] = []
     #记录过滤条数
     skipped_count = 0
@@ -109,29 +142,9 @@ def clean(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # 复制一份 issue，避免调用方传入的原始列表被原地修改。
         cleaned_issue = issue.copy()
 
-        for field in ("title", "body"):
-            # title/body 缺失时按空字符串处理，保持标准字段存在。
-            raw_text = str(cleaned_issue.get(field, ""))#保证不报错，不存在返回“”
-
-            # 第一步：用 BeautifulSoup 去掉 HTML 标签，只保留可读文本。
-            text_without_html = BeautifulSoup(raw_text, "html.parser").get_text(" ")
-
-            # 第二步：解码 HTML 实体，例如 &amp; -> &，&lt; -> <。
-            unescaped_text = html.unescape(text_without_html)
-
-            # 第三步：把连续空格、换行、制表符压缩成一个空格，并去掉首尾空白。
-            cleaned_issue[field] = re.sub(r"\s+", " ", unescaped_text).strip()
-            r"""
-              ┌───────────────────────────────┬────────────────┐
-  │            用什么             │     做什么     │
-  ├───────────────────────────────┼────────────────┤
-  │ BeautifulSoup(...).get_text() │ 去 HTML 标签   │
-  ├───────────────────────────────┼────────────────┤
-  │ html.unescape()               │ 解码 HTML 实体 │
-  ├───────────────────────────────┼────────────────┤
-  │ re.sub(r"\s+", " ", ...)      │ 压缩空白       │
-  └───────────────────────────────┴────────────────┘
-"""
+        # title 保持单行语义；body 单独清洗，保留供 chunking 与 error log 使用的结构换行。
+        cleaned_issue["title"] = _normalize_inline_text(cleaned_issue.get("title", ""))
+        cleaned_issue["body"] = _normalize_body_text(cleaned_issue.get("body", ""))
 
         cleaned_issues.append(cleaned_issue)
 
