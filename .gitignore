@@ -37,11 +37,15 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 
-# 索引与生成产物(运行 scripts/run_step2.py 重新生成)
+# 索引与生成产物(运行 scripts/run_step2.py 与 scripts/build_eval_assets.py 重新生成)
 chroma_db/
+chroma_db_en/
 bm25.pkl
+docstore.pkl
 *.pkl
 datasets/
+eval/data/
+eval_results/
 
 # 数据文件(15万 issue 不放仓库)
 data/

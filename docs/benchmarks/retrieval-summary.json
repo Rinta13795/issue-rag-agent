@@ -1,0 +1,84 @@
+{
+  "provenance": "Existing local evaluation artifacts; not rerun for this publication",
+  "results": {
+    "vector_only": {
+      "_meta": {
+        "test_set_total": 1726,
+        "evaluated_queries": 200,
+        "sampling": "seed=42 random sample",
+        "self_hit_excluded": true,
+        "rerank_cutoffs": [
+          5,
+          10
+        ]
+      },
+      "recall@5": 0.3338,
+      "recall@10": 0.3965,
+      "recall@30": 0.4835,
+      "precision@5": 0.074,
+      "mrr": 0.2709,
+      "ndcg@10": 0.2886,
+      "p50_latency": 0.022,
+      "p95_latency": 0.035
+    },
+    "bm25_only": {
+      "_meta": {
+        "test_set_total": 1726,
+        "evaluated_queries": 200,
+        "sampling": "seed=42 random sample",
+        "self_hit_excluded": true,
+        "rerank_cutoffs": [
+          5,
+          10
+        ]
+      },
+      "recall@5": 0.273,
+      "recall@10": 0.3337,
+      "recall@30": 0.4305,
+      "precision@5": 0.062,
+      "mrr": 0.2492,
+      "ndcg@10": 0.2589,
+      "p50_latency": 2.901,
+      "p95_latency": 49.016
+    },
+    "hybrid": {
+      "_meta": {
+        "test_set_total": 1726,
+        "evaluated_queries": 200,
+        "sampling": "seed=42 random sample",
+        "self_hit_excluded": true,
+        "rerank_cutoffs": [
+          5,
+          10
+        ]
+      },
+      "recall@5": 0.3484,
+      "recall@10": 0.4257,
+      "recall@30": 0.5394,
+      "precision@5": 0.08,
+      "mrr": 0.2775,
+      "ndcg@10": 0.2974,
+      "p50_latency": 3.054,
+      "p95_latency": 528.387
+    },
+    "hybrid_rerank": {
+      "_meta": {
+        "test_set_total": 1726,
+        "evaluated_queries": 200,
+        "sampling": "seed=42 random sample",
+        "self_hit_excluded": true,
+        "rerank_cutoffs": [
+          5,
+          10
+        ]
+      },
+      "recall@5": 0.313,
+      "recall@10": 0.3701,
+      "precision@5": 0.071,
+      "mrr": 0.2292,
+      "ndcg@10": 0.2542,
+      "p50_latency": 6.336,
+      "p95_latency": 53.087
+    }
+  }
+}

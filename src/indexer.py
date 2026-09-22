@@ -145,8 +145,13 @@ def chunk_issue(issue: dict) -> list[Document]:
 
 def load_embeddings() -> HuggingFaceEmbeddings:
     """输入无，输出本地 BGE Embedding 模型实例，用于 ChromaDB 向量化。"""
+    import os
     # HuggingFaceEmbeddings 只在真正构建向量索引时需要，避免导入 indexer 时提前加载重依赖。
     from langchain_huggingface import HuggingFaceEmbeddings
+
+    # 模型已本地缓存，禁止运行时联网检查更新，避免代理故障导致加载失败。
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
     # 从 config.py 读取模型名和运行设备，避免在索引逻辑中硬编码。
     logger.info("加载本地 Embedding 模型：{} ({})", EMBED_MODEL, EMBED_DEVICE)
@@ -172,12 +177,16 @@ def build_chroma_index(all_issues: list[dict]) -> tuple[Chroma, list[Document]]:
 
     logger.info("chunk 构建完成：{} issues -> {} chunks", len(all_issues), len(all_chunks))
 
-    # 初始化本地 BGE Embedding 和 ChromaDB 持久化 collection。包含表名+文件夹位置
+    # 初始化本地 Embedding 和 ChromaDB 持久化 collection。
+    # collection_metadata 显式声明 cosine 距离空间：v1 使用 Chroma 默认 l2，
+    # 而 VectorRetriever 按 `1 - distance` 转分数，语义只在 cosine 下成立。
+    # 注意：该配置只影响新建 collection；对已存在的旧索引不生效（需重建才能切换）。
     embeddings = load_embeddings()
     vectorstore = Chroma(
         collection_name=CHROMA_COLLECTION,
         embedding_function=embeddings,
         persist_directory=CHROMA_PERSIST_DIR,
+        collection_metadata={"hnsw:space": "cosine"},
     )
 
     # 按 config.py 中的批大小分批写入，避免一次性 add_documents 导致内存压力过大。————每次500个500个读

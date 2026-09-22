@@ -37,22 +37,25 @@ class Reranker:
 
         logger.info("Rerank 开始：query={}, docs={}", query, len(docs))
 
+        # 先浅拷贝每个 doc 再写入 rerank_score：v1 直接原地修改调用方传入的列表，
+        # 导致 State 中 retrieved_docs 被悄悄污染，benchmark 也必须自行 copy 防御。
+        scored_docs = [doc.copy() for doc in docs]
+
         pairs: list[tuple[str, str]] = []
-        for doc in docs:
-            # pair 格式是 (query, title + body)，让 CrossEncoder 同时看查询和候选 issue。硬截断方式，此时收益更大
+        for doc in scored_docs:
+            # pair 格式是 (query, title + body)，让 CrossEncoder 同时看查询和候选 issue。
             text = f"{doc.get('title', '')}\n{doc.get('body', '')}"
-            #硬截断方式，此时收益更大
             # 截断到 config.py 指定字符数：BERT 最大输入约 512 token，不截断可能报错或被底层不一致截断。
             pairs.append((query, text[:RERANK_DOC_MAX_CHARS]))
 
-        # CrossEncoder 返回分数顺序和 pairs 完全一致，因此可以 zip 回原始 docs。
+        # CrossEncoder 返回分数顺序和 pairs 完全一致，因此可以 zip 回候选 docs。
         scores = self.model.predict(pairs)
-        for doc, score in zip(docs, scores):
-            # （给每个 doc 写入 rerank_score！！！），后续 Decision 节点可以看到精排分数。
+        for doc, score in zip(scored_docs, scores):
+            # 给每个 doc 写入 rerank_score，后续 Decision 节点可以看到精排分数。
             doc["rerank_score"] = float(score)
 
         # 按 rerank_score 降序排列，分数越高表示 query-doc 匹配越强。
-        sorted_docs = sorted(docs, key=lambda item: -item["rerank_score"])
+        sorted_docs = sorted(scored_docs, key=lambda item: -item["rerank_score"])
 
         # 默认保留 TopK；如果候选不足 TopK，就返回全部候选。
         cut = min(top_k, len(sorted_docs))

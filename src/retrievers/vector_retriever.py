@@ -43,6 +43,15 @@ class VectorRetriever:
             score = 1 - float(distance)
 
             # 同一 issue 只保留相似度最高的 chunk，body 用该 chunk 的 page_content。
+            """
+如果第一次遇到这个 issue：
+    保存
+
+如果以前遇到过：
+    比较新 chunk 和旧 chunk 的 score
+    新的更高 -> 替换
+    新的更低 -> 什么都不做
+            """
             if issue_id not in issue_best or score > issue_best[issue_id]["score"]:
                 issue_best[issue_id] = {
                     "id": issue_id,

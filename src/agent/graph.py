@@ -17,6 +17,7 @@ from src.agent.state import IssueState
 _HYBRID_RETRIEVER = None
 _RERANKER = None
 _DEPENDENCIES_READY = False
+_COMPILED_GRAPH = None
 
 
 def get_hybrid_retriever():
@@ -24,12 +25,13 @@ def get_hybrid_retriever():
     # Chroma 和检索器依赖只在真正构建 Agent 图时导入，避免 import run_agent 时提前加载重模型。
     from langchain_chroma import Chroma
 
+    from src.docstore import load_docstore
     from src.indexer import load_embeddings
     from src.retrievers.bm25_retriever import BM25Retriever
     from src.retrievers.hybrid_retriever import HybridRetriever
     from src.retrievers.vector_retriever import VectorRetriever
 
-    # ChromaDB 读取 Step2 构建好的持久化向量库，Embedding 用同一套本地 BGE 模型。
+    # ChromaDB 读取 Step2 构建好的持久化向量库，Embedding 用同一套本地模型。
     vectorstore = Chroma(
         collection_name=CHROMA_COLLECTION,
         embedding_function=load_embeddings(),
@@ -37,10 +39,10 @@ def get_hybrid_retriever():
     )
 
     # VectorRetriever 负责语义召回，BM25Retriever 负责关键词召回，HybridRetriever 用 RRF 融合。
+    # docstore 为融合后缺正文的候选（BM25-only）补齐 title/body；文件缺失时退回 v1 行为。
     vector_retriever = VectorRetriever(vectorstore)
     bm25_retriever = BM25Retriever()
-    # 元数据+分数一起输出
-    return HybridRetriever(vector_retriever, bm25_retriever)
+    return HybridRetriever(vector_retriever, bm25_retriever, docstore=load_docstore())
 
 
 def get_reranker():
@@ -108,21 +110,30 @@ def build_graph():
         {"retry": "query_analysis", "end": END},
     )
     """
-    
   decision 跑完
       → should_retry(state)
           → confidence < 0.7 且 retry <= 2 → 返回 "retry" → 去 query_analysis
           → 否则 → 返回 "end" → 结束
-
-
     """
     # 搭建状态机
     return graph.compile()
 
+def get_graph():
+    """输入无，输出进程内唯一的已编译 LangGraph 实例。
+
+    v1 每次 run_agent 都重新 build_graph（重依赖有缓存，但图对象每次重建）；
+    这里把编译结果也缓存，反复调用 run_agent 时不再有构图开销。
+    """
+    global _COMPILED_GRAPH
+    if _COMPILED_GRAPH is None:
+        _COMPILED_GRAPH = build_graph()
+    return _COMPILED_GRAPH
+
+
 def run_agent(issue_text: str) -> dict:
     """输入原始 issue 文本，输出最终决策结果。"""
     logger.info("开始运行 Issue RAG Agent")
-    graph = build_graph()
+    graph = get_graph()
 
     # 初始化 LangGraph 状态，只放原始 issue 和循环控制字段，其余字段由节点逐步写入。
     initial_state = {
@@ -132,14 +143,11 @@ def run_agent(issue_text: str) -> dict:
     }
     # 开始使用，final就是结果
     """
-  
-  invoke每一个节点执行逻辑的时候，按节点执行顺序，每个节点 return 的 dict 用 dict.update 合并进容器：
-  - 新 key → 加进去
-  - 旧 key → 覆盖
-  
-  后面节点拿到的就是被前面节点更新过的容器。
-
-
+    graph.invoke(initial_state)获得的LangGraph去执行逻辑
+    invoke每一个节点执行逻辑的时候，按节点执行顺序，每个节点 return 的 dict 用 dict.update 合并进容器：
+    - 新 key → 加进去
+    - 旧 key → 覆盖
+    后面节点拿到的就是被前面节点更新过的容器。
     """
     final = graph.invoke(initial_state)
 

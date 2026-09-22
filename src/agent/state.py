@@ -6,8 +6,8 @@ from typing_extensions import NotRequired
 
 
 class IssueState(TypedDict):
-    """四个 LangGraph 节点共享的状态，字段按生产者分组。
-
+    """
+    四个 LangGraph 节点共享的状态，字段按生产者分组。
     `run_agent` 只初始化原始输入和重试控制字段；其余字段由节点逐步写入。
     节点只返回自己更新的字段，LangGraph 会将它们合并进共享状态。
     低置信度重试时，中间结果会被覆盖，`previous_decisions` 则持续追加。
@@ -24,6 +24,8 @@ class IssueState(TypedDict):
     rewritten_query: str
     keywords: List[str]
     component: Optional[str]
+    component_filter_applied: NotRequired[bool]
+    component_filter_note: NotRequired[str]
 
     # retrieval_node：保存 HybridRetriever 返回的 Top-30 候选 Issue。
     retrieved_docs: List[dict]

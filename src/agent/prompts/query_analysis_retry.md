@@ -1,7 +1,7 @@
 ---
 name: query_analysis_retry
-description: 重试时拼接到 user prompt 末尾的反思块，含上轮决策与检索诊断
-version: v2
+description: 重试时拼接到 user prompt 末尾的反思块，含上轮决策、Top 候选与检索诊断
+version: v3
 ---
 
 ## 上次重试反思
@@ -20,6 +20,9 @@ version: v2
 - 缺少 title/body 证据的候选数：{missing_evidence_count}
 - 最高 rerank 分数：{top_score}
 - 前两名分差：{score_gap}
+
+上一轮 Top 候选（检索实际返回的内容）：
+{last_top_candidates}
 
 不要把低置信度直接等同于“召回不准”，也不要把上次 reasoning 当作事实。结合原始
 issue 和以上诊断重新改写：

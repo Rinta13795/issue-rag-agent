@@ -46,7 +46,12 @@ class FakeBM25Retriever:
         self.results_by_query = results_by_query or {}
         self.calls: list[str] = []
 
-    def search(self, query: str, top_k: int) -> list[dict]:
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        extra_terms: list[str] | None = None,
+    ) -> list[dict]:
         self.calls.append(query)
         return [doc.copy() for doc in self.results_by_query.get(query, [])][:top_k]
 

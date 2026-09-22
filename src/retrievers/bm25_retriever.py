@@ -6,7 +6,7 @@ from typing import Any
 
 from loguru import logger
 
-from config import BM25_INDEX_PATH, BM25_TOP_K
+from config import BM25_INDEX_PATH, BM25_MAX_QUERY_CHARS, BM25_MIN_SCORE, BM25_TOP_K
 from src.indexer import tokenize
 
 
@@ -25,11 +25,30 @@ class BM25Retriever:
         self.bm25 = data["bm25"]
         self.ids: list[str] = data["ids"]
 
-    def search(self, query: str, top_k: int = BM25_TOP_K) -> list[dict]:
-        """输入 query 和 TopK，输出按 BM25 分数降序排列的 issue id 与 score 列表。"""
-        # 查询分词必须复用建索引时的 tokenize，保证 jieba + 空格细分 + 小写规则完全一致。————将词分开
-        query_tokens = tokenize(query)
-        logger.info("BM25 检索开始：query={}, top_k={}", query, top_k)
+    def search(
+        self,
+        query: str,
+        top_k: int = BM25_TOP_K,
+        extra_terms: list[str] | None = None,
+    ) -> list[dict]:
+        """输入 query、TopK 和可选补充关键词，输出按 BM25 分数降序排列的 issue id 与 score 列表。
+
+        extra_terms 是 Query Analysis 提取的 keywords：追加到 query token 中相当于
+        提升错误码、API 名等精确信号的词频权重。v1 中 keywords 只在 Decision prompt
+        中展示，没有参与任何检索，这里让它真正作用于 BM25。
+        """
+        # 对输入 query 做长度保护：超长输入（如大段日志、堆栈 dump）会导致分词与打分出现严重长尾延迟。
+        # 截断时优先保留前部关键信息（标题、错误类型、初始堆栈），extra_terms (keywords) 额外保留并追加。
+        trimmed_query = query[:BM25_MAX_QUERY_CHARS] if len(query) > BM25_MAX_QUERY_CHARS else query
+        # 查询分词必须复用建索引时的 tokenize，保证 jieba + 空格细分 + 小写规则完全一致。
+        query_tokens = tokenize(trimmed_query)
+
+        # keywords 同样过 tokenize，保证和索引词汇的切分、小写规则一致。
+        for term in extra_terms or []:
+            if isinstance(term, str) and term.strip():
+                query_tokens.extend(tokenize(term))
+
+        logger.info("BM25 检索开始：query={}, top_k={}, extra_terms={}", query, top_k, extra_terms)
 
         # BM25 是 issue 粒度索引，get_scores 返回全量 issue 分数，不需要 chunk 聚合。
         scores = self.bm25.get_scores(query_tokens)
@@ -37,15 +56,16 @@ class BM25Retriever:
         # scores 下标和 self.ids 下标一一对应，按分数降序取 TopK 下标。
         top_indices = sorted(
             range(len(scores)),
-            key=lambda index: scores[index],#按照下标对应大小分数，对下标进行排序
+            key=lambda index: scores[index],
             reverse=True,
-        )[:top_k]#表示取前几个
+        )[:top_k]
 
-        # 通过 ids[下标] 找回 issue_id，只返回 id 和 score，不返回 chunk 内容。
-        # ——————从top score向下一步一步返回，id和score通过index一一对应
+        # 过滤零分候选：BM25 为 0 表示 query 词一个都没命中，这类候选进入 RRF
+        # 只会挤占真实候选的排名配额（v1 已知限制之一）。
         results = [
             {"id": self.ids[index], "score": float(scores[index])}
             for index in top_indices
+            if float(scores[index]) > BM25_MIN_SCORE
         ]
 
         logger.info("BM25 检索完成：返回 {} 个 issue", len(results))

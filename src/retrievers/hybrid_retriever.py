@@ -9,21 +9,33 @@ from config import HYBRID_TOP_K, RRF_K
 
 
 class HybridRetriever:
-    """输入已初始化的向量检索器和 BM25 检索器，输出混合检索器。"""
+    """输入已初始化的向量检索器和 BM25 检索器，输出混合检索器。
 
-    def __init__(self, vector_retriever: Any, bm25_retriever: Any) -> None:
-        """输入两个已初始化检索器，保存为混合检索的两路召回依赖。"""
+    可选传入 docstore（issue_id -> {title, body}）：融合后为缺少正文的候选
+    （通常是只被 BM25 召回的 issue）补齐 title/body，让 Reranker 和 Decision
+    对所有候选都有文本证据。docstore 为空时行为与 v1 完全一致。
+    """
+
+    def __init__(
+        self,
+        vector_retriever: Any,
+        bm25_retriever: Any,
+        docstore: dict[str, dict] | None = None,
+    ) -> None:
+        """输入两个已初始化检索器和可选文档库，保存为混合检索依赖。"""
         # VectorRetriever 负责语义召回，BM25Retriever 负责关键词和错误码等精确召回。
         self.vector_retriever = vector_retriever
         self.bm25_retriever = bm25_retriever
+        self.docstore = docstore or {}
 
     def search(
         self,
         query: str,
         top_k: int = HYBRID_TOP_K,
         filter_dict: dict | None = None,
+        bm25_extra_terms: list[str] | None = None,
     ) -> list[dict]:
-        """输入 query、TopK 和可选向量过滤条件，输出 RRF 融合后的 issue 结果列表。"""
+        """输入 query、TopK、可选向量过滤条件和 BM25 补充关键词，输出 RRF 融合结果。"""
         logger.info("混合检索开始：query={}, top_k={}, filter={}", query, top_k, filter_dict)
 
         # 向量检索可以使用 metadata filter，利用 component 等结构化信息缩小语义召回范围。
@@ -34,7 +46,12 @@ class HybridRetriever:
         )
 
         # BM25 不做预过滤，防止 component 判断错误时漏掉关键词强匹配的 duplicate。
-        bm25_results = self.bm25_retriever.search(query=query, top_k=top_k)
+        # keywords 作为补充 token 加强错误码、API 名等精确信号的权重。
+        bm25_results = self.bm25_retriever.search(
+            query=query,
+            top_k=top_k,
+            extra_terms=bm25_extra_terms,
+        )
 
         # RRF 不做线性加权，因为 BM25 分数无上限、向量相似度约在 0-1，量纲不一致。
         # RRF_K=60 来自 Cormack 2009 论文经验值；按排名加分让两路都靠前的 doc 自然胜出。
@@ -45,31 +62,8 @@ class HybridRetriever:
         for rank, doc in enumerate(vector_results, start=1):
             issue_id = doc["id"]
             rrf_scores[issue_id] += 1.0 / (RRF_K + rank)
-            """
-  rank = 1
-  for doc in vector_results:
-      rrf_scores[doc["id"]] += 1.0 / (60 + rank)
-      rank += 1
-  
-  用 enumerate 的写法：
-
-  for rank, doc in enumerate(vector_results, start=1):
-      rrf_scores[doc["id"]] += 1.0 / (60 + rank)
-语法不同
-            """
 
             # issue 信息以向量检索结果为准，因为它包含 title/body/metadata。
-            """
-             issue_docs 是一个字典，key 是 issue_id，value 是这条 issue 的完整信息。
-
-  存成这样是因为最后输出需要返回完整的 issue 内容，不能只返回 id 和分数。
-  
-  {
-      "issue_001": {"id": "issue_001", "title": "按键坏了", "body": "...", "metadata":
-  {...}},
-      "issue_005": {"id": "issue_005", "title": "崩溃", "body": "...", "metadata": {...}},
-  }
-"""
             issue_docs[issue_id] = {
                 "id": issue_id,
                 "title": doc.get("title", ""),
@@ -80,12 +74,10 @@ class HybridRetriever:
         # 第二遍融合 BM25 结果：BM25 只有 id/score，因此只补最少字段，不覆盖向量路完整信息。
         for rank, doc in enumerate(bm25_results, start=1):
             issue_id = doc["id"]
-            # 累加分数
             rrf_scores[issue_id] += 1.0 / (RRF_K + rank)
 
-            # 只在 BM25 出现的 issue 没有 chunk 内容，返回空 title/body/metadata 作为最小信息。
+            # 只在 BM25 出现的 issue 没有 chunk 内容，先占位，融合后由 docstore 补齐。
             if issue_id not in issue_docs:
-                #每一个issue的元数据都在这个issue_docs里面
                 issue_docs[issue_id] = {
                     "id": issue_id,
                     "title": "",
@@ -93,22 +85,25 @@ class HybridRetriever:
                     "metadata": {},
                 }
 
-        # 按 RRF 分数降序排序，RRF 共识机制会让两路排名都靠前的 issue 排到更前。————按照score顺序
+        # 按 RRF 分数降序排序，RRF 共识机制会让两路排名都靠前的 issue 排到更前。
         ranked_ids = sorted(rrf_scores, key=lambda issue_id: -rrf_scores[issue_id])[:top_k]
 
         # 输出统一格式：score 使用融合后的 RRF 分数，而不是原始 BM25 或向量分数。
         results = []
         for issue_id in ranked_ids:
-            # 将元数据和ranked数据整合起来一起输出，并且这是按照Ranked顺列整理好的
             result = issue_docs[issue_id].copy()
             result["score"] = rrf_scores[issue_id]
             results.append(result)
 
+        # 融合后统一补齐正文：只被 BM25 召回的候选在这里获得 title/body。
+        hydrated = self._hydrate(results)
+
         logger.info(
-            "混合检索完成：vector={} 条，bm25={} 条，返回 {} 个 issue",
+            "混合检索完成：vector={} 条，bm25={} 条，返回 {} 个 issue（docstore 补齐 {} 个）",
             len(vector_results),
             len(bm25_results),
             len(results),
+            hydrated,
         )
         return results
 
@@ -117,6 +112,7 @@ class HybridRetriever:
         queries: list[str],
         top_k: int = HYBRID_TOP_K,
         filter_dict: dict | None = None,
+        bm25_extra_terms: list[str] | None = None,
     ) -> list[dict]:
         """分别检索多个 query，再用第二层 RRF 融合为一个候选列表。
 
@@ -147,10 +143,16 @@ class HybridRetriever:
                 query=unique_queries[0],
                 top_k=top_k,
                 filter_dict=filter_dict,
+                bm25_extra_terms=bm25_extra_terms,
             )
 
         ranked_lists = [
-            self.search(query=query, top_k=top_k, filter_dict=filter_dict)
+            self.search(
+                query=query,
+                top_k=top_k,
+                filter_dict=filter_dict,
+                bm25_extra_terms=bm25_extra_terms,
+            )
             for query in unique_queries
         ]
 
@@ -187,6 +189,9 @@ class HybridRetriever:
             result["score"] = rrf_scores[issue_id]
             results.append(result)
 
+        # 内层 search 已各自补齐过正文，这里再补一次覆盖跨路融合后的遗漏，幂等无副作用。
+        self._hydrate(results)
+
         logger.info(
             "多 Query 检索完成：queries={}，各路返回={}，融合后={} 个 issue",
             len(unique_queries),
@@ -195,25 +200,35 @@ class HybridRetriever:
         )
         return results
 
+    def _hydrate(self, results: list[dict]) -> int:
+        """为缺少 title/body 的候选从 docstore 补齐正文，返回补齐数量。
+
+        只填空缺、不覆盖：向量路候选的 body 是与 query 最相关的 chunk，
+        对 Reranker 是比“正文开头 N 字符”更好的证据，保留原值。
+        """
+        if not self.docstore:
+            return 0
+
+        hydrated = 0
+        for doc in results:
+            record = self.docstore.get(str(doc["id"]))
+            if record is None:
+                continue
+
+            changed = False
+            if not str(doc.get("title", "")).strip() and record.get("title"):
+                doc["title"] = record["title"]
+                changed = True
+            if not str(doc.get("body", "")).strip() and record.get("body"):
+                doc["body"] = record["body"]
+                changed = True
+            if changed:
+                hydrated += 1
+        return hydrated
+
     @staticmethod
     def _evidence_length(doc: dict) -> int:
         """用 title 与 body 的非空字符数衡量候选携带的文本证据量。"""
         title = str(doc.get("title", "")).strip()
         body = str(doc.get("body", "")).strip()
         return len(title) + len(body)
-"""
-为什么BM25不预过滤，但是向量检索预过滤？
-
-BM25
-  - 召回池小（只有真正含查询词的 issue 进入排序）
-  - 噪声少 → 命中率天然高
-  - 加 filter 收益小（已经够准了）
-  - 加 filter 风险大（一旦 component 判错，跨组件 issue 整批被排除）
-
-  向量：
-  - 召回池大（15万全部参与打分）
-  - 噪声多 → 不加 filter 时 Top-30 被弱相关淹没
-  - 加 filter 收益大（显著降噪）
-  - 加 filter 风险被 BM25 兜住（漏掉的跨组件 issue BM25 还能捞回来）
-
-"""
