@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from config import CHAT_MAX_MESSAGES, CHAT_MAX_SESSIONS, CHAT_SESSION_TTL_SECONDS
-from src.chat.models import ChatMessage, ChatSession, utc_now
+from src.chat.models import ChatMessage, ChatSession, ChatSessionSummary, utc_now
 
 
 class ChatStore:
@@ -85,17 +85,28 @@ class ChatStore:
         for key in expired:
             self._remove(key)
 
-    def create(self) -> ChatSession:
+    def create(self, repository_id: str | None = None) -> ChatSession:
         with self._lock:
             self._cleanup()
             while len(self._sessions) >= self.max_sessions:
                 old_id = next(iter(self._sessions))
                 self._remove(old_id)
-            session = ChatSession(session_id=f"chat_{uuid.uuid4().hex[:16]}")
+            session = ChatSession(session_id=f"chat_{uuid.uuid4().hex[:16]}", repository_id=repository_id)
             self._sessions[session.session_id] = (time.time(), session)
             self._client_ids[session.session_id] = {}
             self._persist(session.session_id)
             return session.model_copy(deep=True)
+
+    def list_sessions(self) -> list[ChatSessionSummary]:
+        with self._lock:
+            self._cleanup()
+            return [ChatSessionSummary(
+                session_id=session.session_id,
+                repository_id=session.repository_id,
+                title=next((m.content.strip().splitlines()[0][:50] for m in session.messages if m.role == "user"), "新对话"),
+                updated_at=session.updated_at,
+                status=session.status,
+            ) for _, session in sorted(self._sessions.values(), key=lambda item: item[1].updated_at, reverse=True)]
 
     def get(self, session_id: str) -> ChatSession | None:
         with self._lock:

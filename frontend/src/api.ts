@@ -1,4 +1,4 @@
-import type { ChatSession, EvaluationSummary, ExampleItem, RunSnapshot, SystemInfo } from './types'
+import type { ChatRepository, ChatSession, ChatSessionSummary, EvaluationSummary, ExampleItem, RunSnapshot, SystemInfo } from './types'
 
 const API_BASE = ''
 
@@ -19,8 +19,19 @@ async function chatJson<T>(res: Response): Promise<T> {
   return res.json()
 }
 
-export async function createChatSession(): Promise<ChatSession> {
-  return chatJson(await fetch(`${API_BASE}/api/chat/sessions`, { method: 'POST' }))
+export async function listChatRepositories(): Promise<ChatRepository[]> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/repositories`))
+}
+
+export async function listChatSessions(): Promise<ChatSessionSummary[]> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/sessions`))
+}
+
+export async function createChatSession(repositoryId: string): Promise<ChatSession> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/sessions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repository_id: repositoryId }),
+  }))
 }
 
 export async function getChatSession(sessionId: string): Promise<ChatSession> {

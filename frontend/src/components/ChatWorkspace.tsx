@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChatApiError, createChatSession, getChatSession, sendChatMessage } from '../api'
-import type { ChatSession } from '../types'
+import { ChatApiError, createChatSession, getChatSession, listChatRepositories, listChatSessions, sendChatMessage } from '../api'
+import type { ChatRepository, ChatSession, ChatSessionSummary } from '../types'
 
 const STORAGE_KEY = 'issue-rag-local-chat-session'
 const activeStates = new Set(['thinking', 'retrieving', 'answering'])
@@ -10,37 +10,37 @@ const statusLabels: Record<string, string> = {
   answering: '正在整理证据与回答',
 }
 
+function issueUrl(id: string): string | null {
+  const match = /^openharness:(\d+)$/.exec(id)
+  return match ? `https://github.com/HKUDS/OpenHarness/issues/${match[1]}` : null
+}
+
 interface Props {
   onOpenTriage: () => void
 }
 
 export function ChatWorkspace({ onOpenTriage }: Props) {
   const [session, setSession] = useState<ChatSession | null>(null)
+  const [sessions, setSessions] = useState<ChatSessionSummary[]>([])
+  const [repositories, setRepositories] = useState<ChatRepository[]>([])
+  const [selectedRepository, setSelectedRepository] = useState('')
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [isSending, setIsSending] = useState(false)
   const loadedRef = useRef(false)
-  const recoveringRef = useRef(false)
   const endRef = useRef<HTMLDivElement | null>(null)
   const sessionId = session?.session_id
   const sessionStatus = session?.status
 
-  const recoverMissingSession = useCallback(async () => {
-    if (recoveringRef.current) return
-    recoveringRef.current = true
-    try {
-      const created = await createChatSession()
-      window.localStorage.setItem(STORAGE_KEY, created.session_id)
-      setSession(created)
-      setError(null)
-      setNotice('旧会话无法恢复，已创建新会话。未发送的内容仍留在输入框。')
-    } catch {
-      setError('暂时无法恢复会话，请确认后端已经启动。')
-    } finally {
-      recoveringRef.current = false
-    }
-  }, [])
+  const refreshSessions = useCallback(async () => setSessions(await listChatSessions()), [])
+
+  const forgetMissingSession = useCallback(() => {
+    window.localStorage.removeItem(STORAGE_KEY)
+    setSession(null)
+    setNotice('旧会话已过期。请选择仓库开始新对话。')
+    void refreshSessions()
+  }, [refreshSessions])
 
   useEffect(() => {
     if (loadedRef.current) return
@@ -48,46 +48,72 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
     const savedId = window.localStorage.getItem(STORAGE_KEY)
     const load = async () => {
       try {
-        const current = savedId ? await getChatSession(savedId) : await createChatSession()
-        window.localStorage.setItem(STORAGE_KEY, current.session_id)
-        setSession(current)
+        const [available, history] = await Promise.all([listChatRepositories(), listChatSessions()])
+        setRepositories(available)
+        setSessions(history)
+        if (savedId) setSession(await getChatSession(savedId))
       } catch (caught) {
         if (savedId && caught instanceof ChatApiError && caught.status === 404) {
-          await recoverMissingSession()
+          forgetMissingSession()
         } else {
           setError('暂时无法连接对话服务，请确认后端已经启动。')
         }
       }
     }
     void load()
-  }, [recoverMissingSession])
+  }, [forgetMissingSession])
 
   useEffect(() => {
     if (!sessionId || !sessionStatus || !activeStates.has(sessionStatus)) return
     const timer = window.setInterval(() => {
       getChatSession(sessionId).then(setSession).catch((caught) => {
         if (caught instanceof ChatApiError && caught.status === 404) {
-          void recoverMissingSession()
+          forgetMissingSession()
         } else {
           setError('会话连接中断，请稍后重试。')
         }
       })
     }, 900)
     return () => window.clearInterval(timer)
-  }, [sessionId, sessionStatus, recoverMissingSession])
+  }, [sessionId, sessionStatus, forgetMissingSession])
+
+  useEffect(() => { if (sessionStatus === 'completed' || sessionStatus === 'failed') void refreshSessions() }, [sessionStatus, refreshSessions])
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [session?.messages.length])
 
-  const startNew = async () => {
+  const startNew = () => {
+    window.localStorage.removeItem(STORAGE_KEY)
+    setSession(null)
+    setSelectedRepository('')
+    setDraft('')
+    setError(null)
+    setNotice(null)
+  }
+
+  const createForRepository = async () => {
+    if (!selectedRepository) return
     try {
-      const created = await createChatSession()
+      const created = await createChatSession(selectedRepository)
       window.localStorage.setItem(STORAGE_KEY, created.session_id)
       setSession(created)
-      setDraft('')
       setError(null)
       setNotice(null)
+      await refreshSessions()
     } catch {
       setError('暂时无法创建会话，请确认后端已经启动。')
+    }
+  }
+
+  const openSession = async (id: string) => {
+    try {
+      const opened = await getChatSession(id)
+      window.localStorage.setItem(STORAGE_KEY, id)
+      setSession(opened)
+      setDraft('')
+      setNotice(null)
+      setError(null)
+    } catch {
+      forgetMissingSession()
     }
   }
 
@@ -103,7 +129,7 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
       setSession(await getChatSession(session.session_id))
     } catch (caught) {
       if (caught instanceof ChatApiError && caught.status === 404) {
-        await recoverMissingSession()
+        forgetMissingSession()
       } else {
         setError(caught instanceof Error ? caught.message : '消息发送失败')
       }
@@ -113,6 +139,7 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
   }
 
   const busy = isSending || Boolean(session && activeStates.has(session.status))
+  const activeRepository = repositories.find((repo) => repo.id === session?.repository_id)
   const canSendDraft = Boolean(draft.trim() && draft.trim() !== '报错原文：')
   const hasConversation = Boolean(session?.messages.length) || busy
   const canSearchHistory = Boolean(session?.messages.some((message) =>
@@ -134,15 +161,35 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
     <div className="chat-composer-foot"><span>Enter 发送 · Shift + Enter 换行</span><button type="button" className="btn btn--primary" disabled={!session || busy || !canSendDraft} onClick={() => void send()}>发送消息</button></div>
   </div>
 
-  return <main className={`chat-workspace ${hasConversation ? 'chat-workspace--thread' : 'chat-workspace--home'}`}>
+  return <main className={`chat-workspace chat-workspace--scoped ${hasConversation ? 'chat-workspace--thread' : 'chat-workspace--home'}`}>
+    <aside className="chat-session-list" aria-label="历史对话">
+      <button type="button" className="btn btn--sm" onClick={startNew}>＋ 新对话</button>
+      <p className="chat-session-heading">最近对话</p>
+      {sessions.map((item) => <button type="button" key={item.session_id}
+        className={`chat-session-item ${session?.session_id === item.session_id ? 'chat-session-item--active' : ''}`}
+        onClick={() => void openSession(item.session_id)}>
+        <span>{item.title}</span><small>{item.repository_id || '旧会话 · 未绑定仓库'}</small>
+      </button>)}
+      {!sessions.length && <p className="chat-side-note">还没有对话。</p>}
+    </aside>
+    <div className="chat-conversation-area">
     {!hasConversation && <section className="chat-home" aria-label="开始对话">
       <div className="masthead-pre">ISSUE TRIAGE / CONVERSATION</div>
       <h1 className="masthead-title">你遇到了什么问题<span className="dot">？</span></h1>
-      <p className="masthead-sub">说出报错或故障现象，我会先查本地已索引的历史 Issue，再与你核对线索；目前不能直接读取你的终端或实时 GitHub。</p>
-      {!session && !error && <p className="chat-connection">正在连接本地会话…</p>}
+      <p className="masthead-sub">先选一个仓库，再描述报错或故障现象。这个对话只会检索该仓库已同步的 Issue，不读取你的终端或实时 GitHub。</p>
+      {!session && <div className="chat-repository-picker">
+        <label className="field-label" htmlFor="chat-repository">这次要查哪个仓库？</label>
+        <select id="chat-repository" value={selectedRepository} onChange={(event) => setSelectedRepository(event.target.value)}>
+          <option value="">请选择已索引的仓库</option>
+          {repositories.map((repo) => <option key={repo.id} value={repo.id}>{repo.label} · {repo.issue_count.toLocaleString()} 条 Issue</option>)}
+        </select>
+        {selectedRepository && <p className="chat-side-note">{repositories.find((repo) => repo.id === selectedRepository)?.source}；仓库选定后，本对话中不可切换。</p>}
+        <button type="button" className="btn btn--primary" disabled={!selectedRepository} onClick={() => void createForRepository()}>开始对话</button>
+      </div>}
       {notice && <p className="chat-connection" role="status">{notice}</p>}
-      {error && <div className="chat-connection-error" role="alert"><p className="chat-error">■ {error}</p><button type="button" className="btn btn--sm" onClick={startNew}>重建本地会话</button></div>}
-      {composer}
+      {error && <div className="chat-connection-error" role="alert"><p className="chat-error">■ {error}</p><button type="button" className="btn btn--sm" onClick={startNew}>重新选择</button></div>}
+      {session && <p className="chat-connection">当前仓库：{activeRepository?.label || '旧会话'} · 仅检索此仓库本地快照</p>}
+      {session && composer}
       <div className="chat-home-foot">
         <span>不确定怎么描述？从一句话开始也可以。</span>
         <button type="button" onClick={onOpenTriage}>使用单次分诊 →</button>
@@ -151,7 +198,7 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
 
     {hasConversation && <section className="chat-thread" aria-label="对话">
       <div className="chat-section-head">
-        <div className="block-label"><span className="cn">问题排查</span><span className="en">CONVERSATION</span></div>
+        <div className="block-label"><span className="cn">{activeRepository?.label || '旧会话'}</span><span className="en">CONVERSATION · {session?.repository_id || 'UNSCOPED'}</span></div>
         <button type="button" className="btn btn--sm" onClick={startNew}>新对话</button>
       </div>
       <div className="chat-thread-content">
@@ -159,7 +206,7 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
           {session?.messages.map((message, index) => <article className={`chat-message chat-message--${message.role}`} key={message.id}>
             <div className="chat-message-meta">{message.role === 'user' ? '你' : 'Issue Agent'} · {message.action === 'retrieve' ? '已检索证据' : message.action === 'clarify' ? '需要澄清' : message.action === 'reply' ? '基于当前上下文' : '对话'}</div>
             <p>{message.content}</p>
-            {message.citations.length > 0 && <div className="chat-citation">依据：{message.citations.join(' · ')}</div>}
+            {message.citations.length > 0 && <div className="chat-citation">依据：{message.citations.map((id, index) => <span key={id}>{index > 0 ? ' · ' : ''}{issueUrl(id) ? <a href={issueUrl(id)!} target="_blank" rel="noreferrer">{id} ↗</a> : id}</span>)}</div>}
             {message.action === 'clarify' && index === session.messages.length - 1 && !busy && <div className="chat-clarify-options" aria-label="下一步选择">
               {session.retrieval_calls === 0 && canSearchHistory && <button type="button" className="btn btn--sm" onClick={() => void send('请先用我已经描述的故障现象搜索本地历史 Issue。')}>先查历史 Issue</button>}
               {session.retrieval_calls > 0 ? <>
@@ -173,7 +220,7 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
         </div>
         {(error || session?.last_error) && <p className="chat-error">■ {error || session?.last_error}</p>}
         {notice && <p className="chat-connection" role="status">{notice}</p>}
-        {composer}
+        {session?.repository_id ? composer : <p className="chat-side-note">这是升级前未绑定仓库的旧对话。请点“新对话”并选择仓库后继续。</p>}
         <details className="chat-evidence">
           <summary>查看已知线索与历史候选 <span>{session?.facts.length || 0} 条线索 · {session?.candidates.length || 0} 条候选</span></summary>
           <div className="chat-evidence-content">
@@ -185,14 +232,14 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
         <section className="block">
           <div className="block-label"><span className="cn">历史候选</span><span className="en">ISSUE EVIDENCE</span></div>
           {session?.candidates.length ? <ol className="chat-candidates">{session.candidates.map((candidate) => <li key={candidate.id}>
-            <span className="chat-candidate-id">{candidate.id}</span>
+            <span className="chat-candidate-id">{issueUrl(candidate.id) ? <a href={issueUrl(candidate.id)!} target="_blank" rel="noreferrer">{candidate.id} ↗ 查看原文</a> : candidate.id}</span>
             <b>{candidate.title || '无标题 Issue'}</b>
             <p>{candidate.body_snippet || '当前候选没有正文摘录。'}</p>
           </li>)}</ol> : <p className="chat-side-note">检索后将在这里展示可核对的 Issue 摘录。</p>}
         </section>
         <section className="block">
           <div className="block-label"><span className="cn">运行范围</span><span className="en">LOCAL SESSION</span></div>
-          <p className="chat-side-note">本地会话保留最近 7 天，服务重启后仍可继续；候选来自历史 Issue，不能代替完整修复验证。</p>
+          <p className="chat-side-note">本对话绑定 {activeRepository?.label || '未指定仓库'}，只查该仓库本地快照。会话保留最近 7 天；候选不能代替完整修复验证。</p>
           <p className="chat-side-note">{session ? `模型调用 ${session.model_calls} 次 · 检索 ${session.retrieval_calls} 次` : '等待会话建立'}</p>
           {session?.last_elapsed_ms != null && <p className="chat-side-note">上一轮耗时 {session.last_elapsed_ms} ms{session.prompt_tokens != null ? ` · 已记录输入 ${session.prompt_tokens} token` : ''}</p>}
           <button type="button" className="btn btn--sm" onClick={onOpenTriage}>转到单次分诊</button>
@@ -201,5 +248,6 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
         </details>
       </div>
     </section>}
+    </div>
   </main>
 }

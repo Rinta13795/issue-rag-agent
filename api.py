@@ -41,7 +41,8 @@ from src.demo.models import (
 )
 from src.demo.run_store import get_run_store
 from src.demo.runner import get_observable_runner
-from src.chat.models import ChatSession, SendChatMessageRequest, SendChatMessageResponse
+from src.chat.models import ChatRepository, ChatSession, ChatSessionSummary, CreateChatSessionRequest, SendChatMessageRequest, SendChatMessageResponse
+from src.chat.repositories import list_repositories, repository_exists
 from src.chat.service import get_chat_runner
 from src.chat.store import get_chat_store
 
@@ -201,9 +202,21 @@ def get_evaluation() -> EvaluationSummary:
 
 # ==================== 本地多轮对话 ====================
 
+@app.get("/api/chat/repositories", response_model=list[ChatRepository])
+def get_chat_repositories() -> list[ChatRepository]:
+    return list_repositories()
+
+
+@app.get("/api/chat/sessions", response_model=list[ChatSessionSummary])
+def list_chat_sessions() -> list[ChatSessionSummary]:
+    return get_chat_store().list_sessions()
+
+
 @app.post("/api/chat/sessions", response_model=ChatSession)
-def create_chat_session() -> ChatSession:
-    return get_chat_store().create()
+def create_chat_session(request: CreateChatSessionRequest) -> ChatSession:
+    if not repository_exists(request.repository_id):
+        raise HTTPException(status_code=422, detail="仓库未建立本地索引，请先同步后再选择")
+    return get_chat_store().create(repository_id=request.repository_id)
 
 
 @app.get("/api/chat/sessions/{session_id}", response_model=ChatSession)

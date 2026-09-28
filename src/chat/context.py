@@ -62,6 +62,7 @@ def planner_payload(session: ChatSession, current_message_id: str) -> str:
     current = next(message for message in session.messages if message.id == current_message_id)
     previous = [m for m in session.messages if m.id != current_message_id][-CHAT_RECENT_MESSAGES:]
     payload = {
+        "selected_repository": session.repository_id,
         "current_message": select_message_excerpt(current.content),
         "known_user_facts": [fact.value for fact in session.facts[-CHAT_MAX_FACTS:]],
         "recent_dialogue": [{"role": m.role, "text": m.content[:500]} for m in previous],

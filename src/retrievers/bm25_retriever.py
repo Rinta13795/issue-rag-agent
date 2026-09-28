@@ -24,12 +24,16 @@ class BM25Retriever:
         # bm25 是 BM25Okapi 对象，ids 的下标顺序必须和 bm25 corpus 的下标顺序一致。————存着各种索引模块
         self.bm25 = data["bm25"]
         self.ids: list[str] = data["ids"]
+        self.project_indices: dict[str, list[int]] = {}
+        for index, issue_id in enumerate(self.ids):
+            self.project_indices.setdefault(issue_id.split(":", 1)[0], []).append(index)
 
     def search(
         self,
         query: str,
         top_k: int = BM25_TOP_K,
         extra_terms: list[str] | None = None,
+        project: str | None = None,
     ) -> list[dict]:
         """输入 query、TopK 和可选补充关键词，输出按 BM25 分数降序排列的 issue id 与 score 列表。
 
@@ -55,7 +59,7 @@ class BM25Retriever:
 
         # scores 下标和 self.ids 下标一一对应，按分数降序取 TopK 下标。
         top_indices = sorted(
-            range(len(scores)),
+            self.project_indices.get(project, []) if project else range(len(scores)),
             key=lambda index: scores[index],
             reverse=True,
         )[:top_k]

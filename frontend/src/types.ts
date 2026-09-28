@@ -134,6 +134,7 @@ export interface ChatMessage {
 
 export interface ChatSession {
   session_id: string
+  repository_id: string | null
   created_at: string
   updated_at: string
   status: ChatStatus
@@ -149,4 +150,19 @@ export interface ChatSession {
   completion_tokens: number | null
   last_elapsed_ms: number | null
   last_error: string | null
+}
+
+export interface ChatSessionSummary {
+  session_id: string
+  repository_id: string | null
+  title: string
+  updated_at: string
+  status: ChatStatus
+}
+
+export interface ChatRepository {
+  id: string
+  label: string
+  issue_count: number
+  source: string
 }
