@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { createChatSession, getChatSession, sendChatMessage } from '../api'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { ChatApiError, createChatSession, getChatSession, sendChatMessage } from '../api'
 import type { ChatSession } from '../types'
 
 const STORAGE_KEY = 'issue-rag-local-chat-session'
@@ -18,11 +18,29 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
   const [session, setSession] = useState<ChatSession | null>(null)
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [isSending, setIsSending] = useState(false)
   const loadedRef = useRef(false)
+  const recoveringRef = useRef(false)
   const endRef = useRef<HTMLDivElement | null>(null)
   const sessionId = session?.session_id
   const sessionStatus = session?.status
+
+  const recoverMissingSession = useCallback(async () => {
+    if (recoveringRef.current) return
+    recoveringRef.current = true
+    try {
+      const created = await createChatSession()
+      window.localStorage.setItem(STORAGE_KEY, created.session_id)
+      setSession(created)
+      setError(null)
+      setNotice('旧会话无法恢复，已创建新会话。未发送的内容仍留在输入框。')
+    } catch {
+      setError('暂时无法恢复会话，请确认后端已经启动。')
+    } finally {
+      recoveringRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     if (loadedRef.current) return
@@ -33,27 +51,30 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
         const current = savedId ? await getChatSession(savedId) : await createChatSession()
         window.localStorage.setItem(STORAGE_KEY, current.session_id)
         setSession(current)
-      } catch {
-        if (savedId) {
-          window.localStorage.removeItem(STORAGE_KEY)
-          setError('之前的本地会话已失效，可以开始一段新对话。')
+      } catch (caught) {
+        if (savedId && caught instanceof ChatApiError && caught.status === 404) {
+          await recoverMissingSession()
         } else {
           setError('暂时无法连接对话服务，请确认后端已经启动。')
         }
       }
     }
     void load()
-  }, [])
+  }, [recoverMissingSession])
 
   useEffect(() => {
     if (!sessionId || !sessionStatus || !activeStates.has(sessionStatus)) return
     const timer = window.setInterval(() => {
-      getChatSession(sessionId).then(setSession).catch(() => {
-        setError('会话连接中断，请开始新对话。')
+      getChatSession(sessionId).then(setSession).catch((caught) => {
+        if (caught instanceof ChatApiError && caught.status === 404) {
+          void recoverMissingSession()
+        } else {
+          setError('会话连接中断，请稍后重试。')
+        }
       })
     }, 900)
     return () => window.clearInterval(timer)
-  }, [sessionId, sessionStatus])
+  }, [sessionId, sessionStatus, recoverMissingSession])
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [session?.messages.length])
 
@@ -64,6 +85,7 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
       setSession(created)
       setDraft('')
       setError(null)
+      setNotice(null)
     } catch {
       setError('暂时无法创建会话，请确认后端已经启动。')
     }
@@ -74,12 +96,17 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
     const content = draft.trim()
     setIsSending(true)
     setError(null)
+    setNotice(null)
     try {
       await sendChatMessage(session.session_id, content, window.crypto.randomUUID())
       setDraft('')
       setSession(await getChatSession(session.session_id))
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '消息发送失败')
+      if (caught instanceof ChatApiError && caught.status === 404) {
+        await recoverMissingSession()
+      } else {
+        setError(caught instanceof Error ? caught.message : '消息发送失败')
+      }
     } finally {
       setIsSending(false)
     }
@@ -105,6 +132,7 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
       <h1 className="masthead-title">你遇到了什么问题<span className="dot">？</span></h1>
       <p className="masthead-sub">说出报错、现象或疑问。你可以边聊边补充线索，我会在需要时查找历史 Issue。</p>
       {!session && !error && <p className="chat-connection">正在连接本地会话…</p>}
+      {notice && <p className="chat-connection" role="status">{notice}</p>}
       {error && <div className="chat-connection-error" role="alert"><p className="chat-error">■ {error}</p><button type="button" className="btn btn--sm" onClick={startNew}>重建本地会话</button></div>}
       {composer}
       <div className="chat-home-foot">
@@ -129,6 +157,7 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
           <div ref={endRef} />
         </div>
         {(error || session?.last_error) && <p className="chat-error">■ {error || session?.last_error}</p>}
+        {notice && <p className="chat-connection" role="status">{notice}</p>}
         {composer}
         <details className="chat-evidence">
           <summary>查看已知线索与历史候选 <span>{session?.facts.length || 0} 条线索 · {session?.candidates.length || 0} 条候选</span></summary>
@@ -148,7 +177,7 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
         </section>
         <section className="block">
           <div className="block-label"><span className="cn">运行范围</span><span className="en">LOCAL SESSION</span></div>
-          <p className="chat-side-note">本地会话，服务重启后会失效；候选来自历史 Issue，不能代替完整修复验证。</p>
+          <p className="chat-side-note">本地会话保留最近 7 天，服务重启后仍可继续；候选来自历史 Issue，不能代替完整修复验证。</p>
           <p className="chat-side-note">{session ? `模型调用 ${session.model_calls} 次 · 检索 ${session.retrieval_calls} 次` : '等待会话建立'}</p>
           {session?.last_elapsed_ms != null && <p className="chat-side-note">上一轮耗时 {session.last_elapsed_ms} ms{session.prompt_tokens != null ? ` · 已记录输入 ${session.prompt_tokens} token` : ''}</p>}
           <button type="button" className="btn btn--sm" onClick={onOpenTriage}>转到单次分诊</button>

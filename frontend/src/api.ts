@@ -2,10 +2,19 @@ import type { ChatSession, EvaluationSummary, ExampleItem, RunSnapshot, SystemIn
 
 const API_BASE = ''
 
+export class ChatApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
 async function chatJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `请求失败 (${res.status})`)
+    throw new ChatApiError(err.detail || `请求失败 (${res.status})`, res.status)
   }
   return res.json()
 }
