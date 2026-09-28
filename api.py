@@ -41,6 +41,9 @@ from src.demo.models import (
 )
 from src.demo.run_store import get_run_store
 from src.demo.runner import get_observable_runner
+from src.chat.models import ChatSession, SendChatMessageRequest, SendChatMessageResponse
+from src.chat.service import get_chat_runner
+from src.chat.store import get_chat_store
 
 app = FastAPI(
     title="Issue RAG Agent API",
@@ -194,6 +197,41 @@ def get_system() -> SystemInfo:
 def get_evaluation() -> EvaluationSummary:
     """获取真实评测指标汇总。"""
     return load_evaluation_summary()
+
+
+# ==================== 本地多轮对话 ====================
+
+@app.post("/api/chat/sessions", response_model=ChatSession)
+def create_chat_session() -> ChatSession:
+    return get_chat_store().create()
+
+
+@app.get("/api/chat/sessions/{session_id}", response_model=ChatSession)
+def get_chat_session(session_id: str) -> ChatSession:
+    session = get_chat_store().get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期")
+    return session
+
+
+@app.post("/api/chat/sessions/{session_id}/messages", response_model=SendChatMessageResponse, status_code=202)
+def send_chat_message(session_id: str, request: SendChatMessageRequest) -> SendChatMessageResponse:
+    content = request.content.strip()
+    if not content:
+        raise HTTPException(status_code=422, detail="消息不能为空")
+    store = get_chat_store()
+    try:
+        message_id, created = store.add_user_message(session_id, content, request.client_message_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if created:
+        get_chat_runner().submit(session_id, message_id)
+    session = store.get(session_id)
+    return SendChatMessageResponse(message_id=message_id, session_id=session_id, status=session.status)
 
 
 # ==================== 前端静态资源挂载 ====================

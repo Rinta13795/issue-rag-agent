@@ -107,3 +107,46 @@ export interface EvaluationSummary {
   metrics: Record<string, Record<string, number>>
   notes: string[]
 }
+
+export type ChatStatus = 'idle' | 'thinking' | 'retrieving' | 'answering' | 'completed' | 'failed'
+
+export interface ChatFact {
+  value: string
+  source_message_id: string
+  source_excerpt: string
+}
+
+export interface ChatCandidate {
+  id: string
+  title: string
+  body_snippet: string
+  rerank_score: number | null
+}
+
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
+  citations: string[]
+  action: string | null
+}
+
+export interface ChatSession {
+  session_id: string
+  created_at: string
+  updated_at: string
+  status: ChatStatus
+  messages: ChatMessage[]
+  facts: ChatFact[]
+  open_question: string | null
+  focus_candidate_id: string | null
+  candidates: ChatCandidate[]
+  last_search_fingerprint: string | null
+  model_calls: number
+  retrieval_calls: number
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  last_elapsed_ms: number | null
+  last_error: string | null
+}
