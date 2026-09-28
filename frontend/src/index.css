@@ -759,6 +759,7 @@ body { padding: 0; background: var(--paper); }
 .chat-message p { color: var(--ink-body); font-size: 14px; line-height: 1.9; white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat-message--user p { color: var(--ink); font-weight: 700; }
 .chat-citation { margin-top: 10px; }
+.chat-clarify-options { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .chat-progress { padding: 20px 0; color: var(--ink-soft); font: 11px/1.9 var(--mono); }
 .chat-error { margin-top: 20px; color: var(--ink-soft); font: 11px/1.9 var(--mono); }
 .chat-error::first-letter { color: var(--accent); }
