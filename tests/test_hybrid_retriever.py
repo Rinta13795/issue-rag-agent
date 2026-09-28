@@ -51,6 +51,7 @@ class FakeBM25Retriever:
         query: str,
         top_k: int,
         extra_terms: list[str] | None = None,
+        project: str | None = None,
     ) -> list[dict]:
         self.calls.append(query)
         return [doc.copy() for doc in self.results_by_query.get(query, [])][:top_k]
@@ -67,6 +68,15 @@ def _doc(issue_id: str, body: str) -> dict:
 
 
 class HybridRetrieverMultiQueryTest(unittest.TestCase):
+    def test_repository_scope_filters_both_routes_before_rrf(self) -> None:
+        vector = FakeVectorRetriever({"skill": [_doc("vscode:1", "wrong repo"), _doc("openharness:2", "correct repo")]})
+        bm25 = FakeBM25Retriever({"skill": [{"id": "hbase:3", "score": 10}, {"id": "openharness:4", "score": 2}]})
+        retriever = HybridRetriever(vector, bm25)
+
+        results = retriever.search("skill", top_k=4, project="openharness")
+
+        self.assertEqual({doc["id"] for doc in results}, {"openharness:2", "openharness:4"})
+
     def test_fuses_rankings_and_keeps_more_complete_evidence(self) -> None:
         vector = FakeVectorRetriever(
             {

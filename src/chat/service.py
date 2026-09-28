@@ -38,10 +38,10 @@ from src.chat.prompts import ANSWER_SYSTEM, PLANNER_SYSTEM
 from src.chat.store import ChatStore, get_chat_store
 
 
-def _default_retrieval_provider():
-    from src.agent.graph import get_retrieval_dependencies
+def _default_retrieval_provider(repository_id: str):
+    from src.chat.repositories import get_chat_retrieval_dependencies
 
-    return get_retrieval_dependencies()
+    return get_chat_retrieval_dependencies(repository_id)
 
 
 class ChatService:
@@ -112,6 +112,7 @@ class ChatService:
     def _answer_from_candidates(self, session_id: str, current: ChatMessage, facts: list[ChatFact], candidates: list[ChatCandidate], query: str, action: str) -> None:
         self.store.update(session_id, lambda session: setattr(session, "status", "answering"))
         payload = json.dumps({
+            "selected_repository": self.store.get(session_id).repository_id,
             "current_message": select_message_excerpt(current.content, 1800),
             "user_facts": [fact.value for fact in facts],
             "search_query": query,
@@ -135,6 +136,9 @@ class ChatService:
         try:
             snapshot = self.store.get(session_id)
             if snapshot is None:
+                return
+            if snapshot.repository_id is None:
+                self._finish(session_id, "这是升级前未绑定仓库的旧对话。请新建对话并选择仓库，避免跨仓库匹配。", "reply", [], None)
                 return
             current = next(message for message in snapshot.messages if message.id == message_id)
             if is_ambiguous_reference(current.content, snapshot):
@@ -163,8 +167,9 @@ class ChatService:
                 plan.force_search or fingerprint != snapshot.last_search_fingerprint
             ):
                 self.store.update(session_id, lambda session: setattr(session, "status", "retrieving"))
-                retriever, reranker = self.retrieval_provider()
-                docs = retriever.search(query=query, top_k=HYBRID_TOP_K)
+                retriever, reranker = self.retrieval_provider(snapshot.repository_id)
+                docs = retriever.search(query=query, top_k=HYBRID_TOP_K, project=snapshot.repository_id)
+                docs = [doc for doc in docs if str(doc.get("id", "")).startswith(snapshot.repository_id + ":")]
                 ranked = reranker.rerank(query=query, docs=docs)
                 candidates = [candidate_from_doc(doc) for doc in ranked if doc.get("id") and (doc.get("title") or doc.get("body"))]
                 candidates = candidates[:CHAT_MAX_CANDIDATES]
@@ -177,7 +182,7 @@ class ChatService:
 
                 self.store.update(session_id, record_search)
                 if not candidates:
-                    self._finish(session_id, "我按现有描述查了本地历史 Issue，但没有找到可核对的候选。这不代表其他仓库或最新 Issue 没有人解决。你能补充报错原文或发生故障的仓库吗？", "clarify", [], "报错原文或发生故障的仓库是什么？")
+                    self._finish(session_id, f"我在 {snapshot.repository_id} 的本地历史 Issue 中没有找到可核对的候选。这不代表最新 Issue 没有人解决。你可以补充报错原文，或在新对话中选择其他仓库。", "clarify", [], "能补充报错原文或复现步骤吗？")
                     return
                 self._answer_from_candidates(session_id, current, facts, candidates, query, "retrieve")
                 return

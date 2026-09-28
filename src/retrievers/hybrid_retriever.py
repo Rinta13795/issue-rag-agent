@@ -34,24 +34,31 @@ class HybridRetriever:
         top_k: int = HYBRID_TOP_K,
         filter_dict: dict | None = None,
         bm25_extra_terms: list[str] | None = None,
+        project: str | None = None,
     ) -> list[dict]:
         """输入 query、TopK、可选向量过滤条件和 BM25 补充关键词，输出 RRF 融合结果。"""
         logger.info("混合检索开始：query={}, top_k={}, filter={}", query, top_k, filter_dict)
 
         # 向量检索可以使用 metadata filter，利用 component 等结构化信息缩小语义召回范围。
+        scoped_filter = filter_dict
+        if project:
+            scoped_filter = {"project": project} if not filter_dict else {"$and": [filter_dict, {"project": project}]}
         vector_results = self.vector_retriever.search(
             query=query,
             top_k=top_k,
-            filter_dict=filter_dict,
+            filter_dict=scoped_filter,
         )
 
         # BM25 不做预过滤，防止 component 判断错误时漏掉关键词强匹配的 duplicate。
         # keywords 作为补充 token 加强错误码、API 名等精确信号的权重。
-        bm25_results = self.bm25_retriever.search(
-            query=query,
-            top_k=top_k,
-            extra_terms=bm25_extra_terms,
-        )
+        bm25_kwargs = {"query": query, "top_k": top_k, "extra_terms": bm25_extra_terms}
+        if project:
+            bm25_kwargs["project"] = project
+        bm25_results = self.bm25_retriever.search(**bm25_kwargs)
+        if project:
+            # 第二道隔离：即便索引或替身实现有误，也不让其他仓库的 ID 进入融合。
+            vector_results = [doc for doc in vector_results if str(doc.get("id", "")).startswith(project + ":")]
+            bm25_results = [doc for doc in bm25_results if str(doc.get("id", "")).startswith(project + ":")]
 
         # RRF 不做线性加权，因为 BM25 分数无上限、向量相似度约在 0-1，量纲不一致。
         # RRF_K=60 来自 Cormack 2009 论文经验值；按排名加分让两路都靠前的 doc 自然胜出。
@@ -113,6 +120,7 @@ class HybridRetriever:
         top_k: int = HYBRID_TOP_K,
         filter_dict: dict | None = None,
         bm25_extra_terms: list[str] | None = None,
+        project: str | None = None,
     ) -> list[dict]:
         """分别检索多个 query，再用第二层 RRF 融合为一个候选列表。
 
@@ -144,6 +152,7 @@ class HybridRetriever:
                 top_k=top_k,
                 filter_dict=filter_dict,
                 bm25_extra_terms=bm25_extra_terms,
+                project=project,
             )
 
         ranked_lists = [
@@ -152,6 +161,7 @@ class HybridRetriever:
                 top_k=top_k,
                 filter_dict=filter_dict,
                 bm25_extra_terms=bm25_extra_terms,
+                project=project,
             )
             for query in unique_queries
         ]

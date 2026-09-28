@@ -39,6 +39,7 @@ class ChatMessage(BaseModel):
 
 class ChatSession(BaseModel):
     session_id: str
+    repository_id: str | None = None  # 旧会话没有仓库归属，不允许继续跨库检索
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
     status: ChatStatus = "idle"
@@ -54,6 +55,25 @@ class ChatSession(BaseModel):
     completion_tokens: int | None = None
     last_elapsed_ms: int | None = None
     last_error: str | None = None
+
+
+class CreateChatSessionRequest(BaseModel):
+    repository_id: str = Field(min_length=1, max_length=80)
+
+
+class ChatSessionSummary(BaseModel):
+    session_id: str
+    repository_id: str | None
+    title: str
+    updated_at: str
+    status: ChatStatus
+
+
+class ChatRepository(BaseModel):
+    id: str
+    label: str
+    issue_count: int
+    source: str
 
 
 class SendChatMessageRequest(BaseModel):

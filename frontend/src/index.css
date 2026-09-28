@@ -737,7 +737,20 @@ body { padding: 0; background: var(--paper); }
 }
 
 /* 对话入口与会话分离；延续纸面系统，不使用彩色消息气泡。 */
+.chat-workspace--scoped { display: grid; grid-template-columns: 220px minmax(0, 1fr); align-items: stretch; }
+.chat-session-list { border-right: 1px solid var(--rule); padding: 28px 16px; min-width: 0; }
+.chat-session-heading { margin: 28px 0 12px; color: var(--ink-faint); font: 11px/1.9 var(--mono); }
+.chat-session-item { display: block; width: 100%; border: 1px solid transparent; border-radius: 5px; background: transparent; padding: 9px 10px; text-align: left; cursor: pointer; color: var(--ink-body); }
+.chat-session-item:hover, .chat-session-item--active { border-color: var(--rule); background: var(--paper); }
+.chat-session-item:focus-visible { outline: 1px solid var(--accent); }
+.chat-session-item span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.chat-session-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-faint); font: 10px/1.9 var(--mono); }
+.chat-conversation-area { min-width: 0; padding: 0 32px; }
+.chat-repository-picker { border: 1px solid var(--rule); border-radius: 5px; padding: 20px; margin: 28px 0; }
+.chat-repository-picker select { display: block; width: 100%; margin: 10px 0; padding: 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--ink); font-size: 14px; }
+.chat-repository-picker .btn { margin-top: 12px; }
 .chat-workspace--home { min-height: calc(100dvh - 260px); display: grid; place-items: center; }
+.chat-workspace--scoped.chat-workspace--home { display: grid; place-items: stretch; }
 .chat-home { width: min(100%, 760px); padding: 40px 0 80px; }
 .chat-home .masthead-title { font-size: clamp(32px, 4vw, 48px); }
 .chat-home .masthead-sub { max-width: 640px; margin-bottom: 36px; }
@@ -791,6 +804,9 @@ body { padding: 0; background: var(--paper); }
   .chat-workspace--home { min-height: calc(100dvh - 260px); }
 }
 @media (max-width: 640px) {
+  .chat-workspace--scoped { display: block; }
+  .chat-session-list { border-right: 0; border-bottom: 1px solid var(--rule); padding: 16px; max-height: 210px; overflow: auto; }
+  .chat-conversation-area { padding: 0 16px; }
   .chat-workspace--home { min-height: auto; }
   .chat-home { padding: 24px 0; }
   .chat-home .masthead-title { font-size: 30px; }

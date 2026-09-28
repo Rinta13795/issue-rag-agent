@@ -66,7 +66,8 @@ def _ensure_dependencies() -> None:
         # 聊天和单次分诊共享重模型；并发首请求只初始化一次。
         logger.info("初始化 LangGraph 依赖：HybridRetriever + Reranker")
         _HYBRID_RETRIEVER = get_hybrid_retriever()
-        _RERANKER = get_reranker()
+        if _RERANKER is None:
+            _RERANKER = get_reranker()
         configure_dependencies(_HYBRID_RETRIEVER, _RERANKER)
         _DEPENDENCIES_READY = True
 
@@ -75,6 +76,16 @@ def get_retrieval_dependencies():
     """返回已缓存的混合检索器与精排器，供对话入口复用。"""
     _ensure_dependencies()
     return _HYBRID_RETRIEVER, _RERANKER
+
+
+def get_cached_reranker():
+    """仅聊天 OpenHarness 时不预加载十万条 GitBugs 的 BM25 索引。"""
+    global _RERANKER
+    if _RERANKER is None:
+        with _DEPENDENCIES_LOCK:
+            if _RERANKER is None:
+                _RERANKER = get_reranker()
+    return _RERANKER
 
 # build_graph的辅助函数
 def should_retry(state: IssueState) -> str:

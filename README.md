@@ -136,6 +136,18 @@ npm run dev
 
 前端开发地址为 [localhost:5173](http://localhost:5173)。只启动前端可以查看界面；实际分诊仍需要后端、模型和索引。
 
+### 仓库绑定对话
+
+进入“对话”后先选择仓库。每次新对话创建独立 `session_id`，并将 `repository_id` 固定保存在 SQLite 会话中；后续消息沿用该仓库的事实、候选和检索结果。向量检索按仓库元数据过滤，BM25 按仓库 Issue ID 过滤，RRF 前再剔除越界候选。切换仓库需创建新对话，旧对话仍可从列表打开。升级前没有仓库归属的旧会话可查看，但不能继续检索，以免混入其他仓库的 Issue。
+
+主索引来自 GitBugs 历史快照。若要查询 HKUDS/OpenHarness 的公开 Issue，可额外运行：
+
+```bash
+python -m scripts.sync_openharness_issues
+```
+
+这会将 OpenHarness 的 Issue 建成独立的本地 BM25、Chroma 和正文证据库，不覆盖 GitBugs 主索引。同步完成后重启服务，仓库选项才会出现。它是运行时的快照，不会自动跟随 GitHub 更新；再次运行同步命令可更新本地数据。公开 Issue 可能包含尚未修复的问题，命中相同报告不等于找到了可靠解决方案。
+
 ## 接口与集成
 
 | 方法 | 路径 | 用途 |
@@ -148,6 +160,9 @@ npm run dev
 | GET | `/api/examples` | 获取预设问题 |
 | GET | `/api/system` | 查询演示元数据与索引存在状态 |
 | GET | `/api/evaluation/summary` | 读取本地评测结果 |
+| GET | `/api/chat/repositories` | 列出本地已索引仓库 |
+| GET | `/api/chat/sessions` | 列出本地对话 |
+| POST | `/api/chat/sessions` | 选择仓库并创建对话 |
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/runs \
