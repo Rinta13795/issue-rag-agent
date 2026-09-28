@@ -114,6 +114,27 @@ def search_query(facts: list[ChatFact]) -> str:
     return " ".join(fact.value for fact in facts)[:CHAT_QUERY_CHARS].strip()
 
 
+_FAULT_SIGNAL = re.compile(r"error|exception|traceback|fail|crash|报错|失败|崩溃|卡住|无法|不能|不了", re.I)
+_SEARCH_REQUEST = re.compile(r"查|搜|有没有.*解决|有人解决|先找", re.I)
+
+
+def fallback_search_query(session: ChatSession, current_message_id: str) -> str:
+    """规划器漏提事实时，用用户原话中的故障现象做一次保守检索。"""
+    current = next(message for message in session.messages if message.id == current_message_id)
+    messages = [current]
+    if _SEARCH_REQUEST.search(current.content):
+        messages.extend(
+            message for message in reversed(session.messages)
+            if message.role == "user" and message.id != current_message_id
+        )
+    for message in messages:
+        for line in message.content.splitlines():
+            line = line.strip()
+            if _FAULT_SIGNAL.search(line):
+                return line[:min(CHAT_QUERY_CHARS, 240)]
+    return ""
+
+
 def search_fingerprint(query: str) -> str:
     return hashlib.sha256(query.encode("utf-8")).hexdigest()
 

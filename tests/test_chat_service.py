@@ -66,16 +66,99 @@ def test_followup_reuses_evidence_and_new_fact_retrieves_once():
     assert third.prompt_tokens == 50
 
 
-def test_hallucinated_fact_does_not_trigger_search():
+def test_hallucinated_fact_is_rejected_but_user_symptom_can_be_searched():
     store = ChatStore()
     session = store.create()
     planner = FakeLLM([{"action": "retrieve", "facts": [{"value": "OAuth token", "source_excerpt": "OAuth token"}]}])
     retriever = FakeRetriever()
-    service = ChatService(store, planner, FakeLLM([]), lambda: (retriever, FakeReranker()))
+    answer = FakeLLM([{"answer": "候选提到了登录失败，但还不能确定原因。", "citations": ["101"]}])
+    service = ChatService(store, planner, answer, lambda: (retriever, FakeReranker()))
     result = send(service, store, session.session_id, "登录不了", "one")
     assert result.facts == []
-    assert result.retrieval_calls == 0
+    assert result.retrieval_calls == 1
+    assert retriever.queries == ["登录不了"]
+    assert result.messages[-1].action == "retrieve"
+
+
+def test_vague_symptom_searches_before_asking_for_error_code():
+    store = ChatStore()
+    session = store.create()
+    planner = FakeLLM([{"action": "clarify", "facts": [], "open_question": "具体错误码是什么？"}])
+    answer = FakeLLM([{"answer": "查到一条可能相关的历史 Issue，但不能确认相同。", "citations": ["101"]}])
+    retriever = FakeRetriever()
+    service = ChatService(store, planner, answer, lambda: (retriever, FakeReranker()))
+    result = send(service, store, session.session_id, "我自己用的时候 skill 无法执行啊，怎么办", "one")
+    assert result.retrieval_calls == 1
+    assert retriever.queries == ["我自己用的时候 skill 无法执行啊，怎么办"]
+    assert result.messages[-1].action == "retrieve"
+
+
+def test_followup_about_solution_does_not_repeat_failed_search_or_error_code_question():
+    store = ChatStore()
+    session = store.create()
+    planner = FakeLLM([
+        {"action": "clarify", "facts": [], "open_question": "请提供错误码。"},
+        {"action": "clarify", "facts": [], "open_question": "请提供错误码。"},
+    ])
+    retriever = FakeRetriever([])
+    service = ChatService(store, planner, FakeLLM([]), lambda: (retriever, FakeReranker()))
+    first = send(service, store, session.session_id, "skill 无法执行", "one")
+    assert first.retrieval_calls == 1
+    assert "查了本地历史 Issue" in first.messages[-1].content
+    second = send(service, store, session.session_id, "你自己去看啊，目前有人解决吗？", "two")
+    assert second.retrieval_calls == 1
+    assert second.messages[-1].action == "reply"
+    assert "已经用这些线索查过" in second.messages[-1].content
+
+
+def test_solution_question_uses_existing_candidates_when_planner_wants_to_clarify():
+    store = ChatStore()
+    session = store.create()
+    planner = FakeLLM([
+        {"action": "clarify", "facts": [], "open_question": "请提供错误码。"},
+        {"action": "clarify", "facts": [], "open_question": "请提供错误码。"},
+    ])
+    answer = FakeLLM([
+        {"answer": "候选 101 描述了类似问题，但未说明已修复。", "citations": ["101"]},
+        {"answer": "候选 101 没有给出已解决的证据。", "citations": ["101"]},
+    ])
+    retriever = FakeRetriever()
+    service = ChatService(store, planner, answer, lambda: (retriever, FakeReranker()))
+    send(service, store, session.session_id, "skill 无法执行", "one")
+    result = send(service, store, session.session_id, "目前有人解决吗？", "two")
+    assert result.retrieval_calls == 1
+    assert answer.calls == 2
+    assert result.messages[-1].action == "reply"
+    assert result.messages[-1].citations == ["101"]
+
+
+def test_unrelated_candidates_do_not_become_claimed_evidence():
+    store = ChatStore()
+    session = store.create()
+    planner = FakeLLM([{"action": "clarify", "facts": [], "open_question": "错误码是什么？"}])
+    answer = FakeLLM([{"answer": "没有足够证据。", "citations": []}])
+    service = ChatService(store, planner, answer, lambda: (FakeRetriever(), FakeReranker()))
+    result = send(service, store, session.session_id, "skill 无法执行", "one")
+    assert result.retrieval_calls == 1
     assert result.messages[-1].action == "clarify"
+    assert result.messages[-1].citations == []
+    assert "不足以确认" in result.messages[-1].content
+
+
+def test_repeated_clarification_explains_capability_boundary_once():
+    store = ChatStore()
+    session = store.create()
+    planner = FakeLLM([
+        {"action": "clarify", "facts": [], "open_question": "请提供错误码。"},
+        {"action": "clarify", "facts": [], "open_question": "请提供错误码。"},
+    ])
+    service = ChatService(store, planner, FakeLLM([]), lambda: (FakeRetriever(), FakeReranker()))
+    first = send(service, store, session.session_id, "我想了解这个系统", "one")
+    assert first.messages[-1].action == "clarify"
+    second = send(service, store, session.session_id, "你自己去看不行吗？", "two")
+    assert second.messages[-1].action == "reply"
+    assert "不能直接读取你本机" in second.messages[-1].content
+    assert second.retrieval_calls == 0
 
 
 def test_missing_candidate_does_not_invent_duplicate():

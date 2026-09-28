@@ -91,15 +91,15 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
     }
   }
 
-  const send = async () => {
-    if (!session || activeStates.has(session.status) || isSending || !draft.trim()) return
-    const content = draft.trim()
+  const send = async (suggestion?: string) => {
+    const content = (suggestion ?? draft).trim()
+    if (!session || activeStates.has(session.status) || isSending || !content || content === '报错原文：') return
     setIsSending(true)
     setError(null)
     setNotice(null)
     try {
       await sendChatMessage(session.session_id, content, window.crypto.randomUUID())
-      setDraft('')
+      if (!suggestion) setDraft('')
       setSession(await getChatSession(session.session_id))
     } catch (caught) {
       if (caught instanceof ChatApiError && caught.status === 404) {
@@ -113,7 +113,15 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
   }
 
   const busy = isSending || Boolean(session && activeStates.has(session.status))
+  const canSendDraft = Boolean(draft.trim() && draft.trim() !== '报错原文：')
   const hasConversation = Boolean(session?.messages.length) || busy
+  const canSearchHistory = Boolean(session?.messages.some((message) =>
+    message.role === 'user' && /error|exception|traceback|fail|crash|报错|失败|崩溃|卡住|无法|不能|不了/i.test(message.content),
+  ))
+  const prefill = (text: string) => {
+    setDraft(text)
+    document.getElementById('chat-input')?.focus()
+  }
 
   const composer = <div className="chat-composer">
     <label className="field-label" htmlFor="chat-input">{hasConversation ? '继续对话' : '描述你的问题'}</label>
@@ -123,14 +131,14 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
       onChange={(event) => setDraft(event.target.value)}
       onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }}
     />
-    <div className="chat-composer-foot"><span>Enter 发送 · Shift + Enter 换行</span><button type="button" className="btn btn--primary" disabled={!session || busy || !draft.trim()} onClick={() => void send()}>发送消息</button></div>
+    <div className="chat-composer-foot"><span>Enter 发送 · Shift + Enter 换行</span><button type="button" className="btn btn--primary" disabled={!session || busy || !canSendDraft} onClick={() => void send()}>发送消息</button></div>
   </div>
 
   return <main className={`chat-workspace ${hasConversation ? 'chat-workspace--thread' : 'chat-workspace--home'}`}>
     {!hasConversation && <section className="chat-home" aria-label="开始对话">
       <div className="masthead-pre">ISSUE TRIAGE / CONVERSATION</div>
       <h1 className="masthead-title">你遇到了什么问题<span className="dot">？</span></h1>
-      <p className="masthead-sub">说出报错、现象或疑问。你可以边聊边补充线索，我会在需要时查找历史 Issue。</p>
+      <p className="masthead-sub">说出报错或故障现象，我会先查本地已索引的历史 Issue，再与你核对线索；目前不能直接读取你的终端或实时 GitHub。</p>
       {!session && !error && <p className="chat-connection">正在连接本地会话…</p>}
       {notice && <p className="chat-connection" role="status">{notice}</p>}
       {error && <div className="chat-connection-error" role="alert"><p className="chat-error">■ {error}</p><button type="button" className="btn btn--sm" onClick={startNew}>重建本地会话</button></div>}
@@ -148,10 +156,17 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
       </div>
       <div className="chat-thread-content">
         <div className="chat-messages" aria-live="polite">
-          {session?.messages.map((message) => <article className={`chat-message chat-message--${message.role}`} key={message.id}>
+          {session?.messages.map((message, index) => <article className={`chat-message chat-message--${message.role}`} key={message.id}>
             <div className="chat-message-meta">{message.role === 'user' ? '你' : 'Issue Agent'} · {message.action === 'retrieve' ? '已检索证据' : message.action === 'clarify' ? '需要澄清' : message.action === 'reply' ? '基于当前上下文' : '对话'}</div>
             <p>{message.content}</p>
             {message.citations.length > 0 && <div className="chat-citation">依据：{message.citations.join(' · ')}</div>}
+            {message.action === 'clarify' && index === session.messages.length - 1 && !busy && <div className="chat-clarify-options" aria-label="下一步选择">
+              {session.retrieval_calls === 0 && canSearchHistory && <button type="button" className="btn btn--sm" onClick={() => void send('请先用我已经描述的故障现象搜索本地历史 Issue。')}>先查历史 Issue</button>}
+              {session.retrieval_calls > 0 ? <>
+                <button type="button" className="btn btn--sm" onClick={() => prefill('报错原文：\n')}>补充报错原文</button>
+                <button type="button" className="btn btn--sm" onClick={() => setNotice('目前只查本地已索引的历史 Issue；查不到不代表其他仓库或最新 Issue 没有解法。')}>查看检索范围</button>
+              </> : <button type="button" className="btn btn--sm" onClick={() => prefill(draft)}>补充线索</button>}
+            </div>}
           </article>)}
           {busy && <div className="chat-progress" role="status">{statusLabels[session?.status || ''] || '正在发送'}…</div>}
           <div ref={endRef} />

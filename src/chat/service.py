@@ -23,6 +23,7 @@ from config import (
 )
 from src.chat.context import (
     candidate_from_doc,
+    fallback_search_query,
     is_ambiguous_reference,
     merge_facts,
     parse_json_object,
@@ -32,7 +33,7 @@ from src.chat.context import (
     select_message_excerpt,
     validate_plan,
 )
-from src.chat.models import ChatMessage, ChatSession
+from src.chat.models import ChatCandidate, ChatFact, ChatMessage, ChatSession
 from src.chat.prompts import ANSWER_SYSTEM, PLANNER_SYSTEM
 from src.chat.store import ChatStore, get_chat_store
 
@@ -108,6 +109,27 @@ class ChatService:
 
         self.store.update(session_id, update)
 
+    def _answer_from_candidates(self, session_id: str, current: ChatMessage, facts: list[ChatFact], candidates: list[ChatCandidate], query: str, action: str) -> None:
+        self.store.update(session_id, lambda session: setattr(session, "status", "answering"))
+        payload = json.dumps({
+            "current_message": select_message_excerpt(current.content, 1800),
+            "user_facts": [fact.value for fact in facts],
+            "search_query": query,
+            "candidates": [candidate.model_dump() for candidate in candidates],
+        }, ensure_ascii=False)
+        answer = self._call(session_id, "answer", ANSWER_SYSTEM, payload)
+        allowed = {candidate.id for candidate in candidates}
+        citations = list(dict.fromkeys(str(item) for item in answer.get("citations", []) if str(item) in allowed)) if isinstance(answer.get("citations"), list) else []
+        body = answer.get("answer") if isinstance(answer.get("answer"), str) else ""
+        question = answer.get("open_question") if isinstance(answer.get("open_question"), str) else None
+        if not body.strip() or not citations:
+            body = "我查了本地历史 Issue，但现有候选还不足以确认是同一故障或已有可靠解法。你可以查看候选原文，或补充报错原文与仓库名称。"
+            citations = []
+            if action == "retrieve":
+                action = "clarify"
+                question = "能提供报错原文或仓库名称吗？"
+        self._finish(session_id, body[:1600], action, citations, question[:240] if question else None)
+
     def process_turn(self, session_id: str, message_id: str) -> None:
         start = time.monotonic()
         try:
@@ -129,9 +151,15 @@ class ChatService:
 
             self.store.update(session_id, apply_plan)
             query = search_query(facts)
+            fallback_query = fallback_search_query(snapshot, message_id)
+            if not query and fallback_query:
+                query = fallback_query
             fingerprint = search_fingerprint(query) if query else None
+            should_retrieve = plan.action == "retrieve" or (
+                bool(fallback_query) and not snapshot.candidates
+            )
 
-            if plan.action == "retrieve" and query and (
+            if should_retrieve and query and (
                 plan.force_search or fingerprint != snapshot.last_search_fingerprint
             ):
                 self.store.update(session_id, lambda session: setattr(session, "status", "retrieving"))
@@ -149,23 +177,9 @@ class ChatService:
 
                 self.store.update(session_id, record_search)
                 if not candidates:
-                    self._finish(session_id, "目前没有找到可核对的历史 Issue。你能补充具体错误提示、触发动作或版本吗？", "clarify", [], "具体错误提示、触发动作或版本是什么？")
+                    self._finish(session_id, "我按现有描述查了本地历史 Issue，但没有找到可核对的候选。这不代表其他仓库或最新 Issue 没有人解决。你能补充报错原文或发生故障的仓库吗？", "clarify", [], "报错原文或发生故障的仓库是什么？")
                     return
-                self.store.update(session_id, lambda session: setattr(session, "status", "answering"))
-                payload = json.dumps({
-                    "current_message": select_message_excerpt(current.content, 1800),
-                    "user_facts": [fact.value for fact in facts],
-                    "candidates": [candidate.model_dump() for candidate in candidates],
-                }, ensure_ascii=False)
-                answer = self._call(session_id, "answer", ANSWER_SYSTEM, payload)
-                allowed = {candidate.id for candidate in candidates}
-                citations = list(dict.fromkeys(str(item) for item in answer.get("citations", []) if str(item) in allowed)) if isinstance(answer.get("citations"), list) else []
-                body = answer.get("answer") if isinstance(answer.get("answer"), str) else ""
-                question = answer.get("open_question") if isinstance(answer.get("open_question"), str) else None
-                if not body.strip() or not citations:
-                    body = "找到了几条可能相关的历史 Issue，但目前还不能确认它们与当前问题相同。你可以查看下方候选原文，并补充更具体的错误信息。"
-                    citations = []
-                self._finish(session_id, body[:1600], "retrieve", citations, question[:240] if question else None)
+                self._answer_from_candidates(session_id, current, facts, candidates, query, "retrieve")
                 return
 
             # 没有事实变化时，沿用当前证据而不是再次检索。
@@ -173,9 +187,15 @@ class ChatService:
                 body = "目前还缺少能检索的故障现象。你遇到了什么错误，发生在哪一步？"
                 self._finish(session_id, body, "clarify", [], body)
                 return
-            if plan.action == "retrieve" and fingerprint == snapshot.last_search_fingerprint:
-                body = "这些线索和上次检索时相同，历史候选没有变化。你想具体比较哪条 Issue，或补充新的报错信息？"
+            if should_retrieve and fingerprint == snapshot.last_search_fingerprint:
+                if snapshot.candidates and any(marker in current.content for marker in ("解决", "修复", "有人处理")):
+                    self._answer_from_candidates(session_id, current, facts, snapshot.candidates, query, "reply")
+                    return
+                body = "我已经用这些线索查过本地历史 Issue，没有新的线索时重复检索不会改变结果。你可以补充报错原文，或查看已有候选。"
                 self._finish(session_id, body, "reply", [], None)
+                return
+            if snapshot.candidates and plan.action == "clarify" and any(marker in current.content for marker in ("解决", "修复", "有人处理")):
+                self._answer_from_candidates(session_id, current, facts, snapshot.candidates, query, "reply")
                 return
             allowed = {candidate.id for candidate in snapshot.candidates}
             citations = [issue_id for issue_id in plan.citations if issue_id in allowed]
@@ -183,6 +203,10 @@ class ChatService:
             body = plan.reply
             if plan.action == "clarify" or not body:
                 body = plan.open_question or "我还不确定你指的是哪条记录。能说一下候选编号，或补充具体错误提示吗？"
+                if any(message.role == "assistant" and message.action == "clarify" for message in snapshot.messages[-2:]):
+                    body = "我不能直接读取你本机的终端或日志，只能查询当前本地历史 Issue 库。现有信息还不足以确认原因；你可以补充报错原文，也可以让我先按已有现象搜索。"
+                    self._finish(session_id, body, "reply", citations, None)
+                    return
             elif candidate_question and snapshot.candidates and not citations:
                 body = "我需要确认你指的是哪条候选 Issue，才能对照已有证据解释。可以说候选编号或第几条吗？"
             self._finish(session_id, body[:1600], plan.action, citations, plan.open_question)
