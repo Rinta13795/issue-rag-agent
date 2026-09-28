@@ -86,26 +86,39 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
   }
 
   const busy = isSending || Boolean(session && activeStates.has(session.status))
+  const hasConversation = Boolean(session?.messages.length) || busy
 
-  return <main className="chat-workspace">
-    <div className="masthead">
+  const composer = <div className="chat-composer">
+    <label className="field-label" htmlFor="chat-input">{hasConversation ? '继续对话' : '描述你的问题'}</label>
+    <textarea
+      id="chat-input" className="field-textarea" value={draft} maxLength={12000}
+      placeholder={hasConversation ? '补充线索，或追问：第一条为什么像？' : '例如：升级依赖后启动失败，贴上报错或说说你观察到的现象…'}
+      onChange={(event) => setDraft(event.target.value)}
+      onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }}
+    />
+    <div className="chat-composer-foot"><span>Enter 发送 · Shift + Enter 换行</span><button type="button" className="btn btn--primary" disabled={!session || busy || !draft.trim()} onClick={() => void send()}>发送消息</button></div>
+  </div>
+
+  return <main className={`chat-workspace ${hasConversation ? 'chat-workspace--thread' : 'chat-workspace--home'}`}>
+    {!hasConversation && <section className="chat-home" aria-label="开始对话">
       <div className="masthead-pre">ISSUE TRIAGE / CONVERSATION</div>
-      <h1 className="masthead-title">把问题讲给 Agent 听<span className="dot">。</span></h1>
-      <p className="masthead-sub">像和同事讨论一样补充细节、追问候选；需要历史证据时，Agent 再去检索。</p>
-      <div className="masthead-rule" />
-    </div>
+      <h1 className="masthead-title">你遇到了什么问题<span className="dot">？</span></h1>
+      <p className="masthead-sub">说出报错、现象或疑问。你可以边聊边补充线索，我会在需要时查找历史 Issue。</p>
+      {!session && !error && <p className="chat-connection">正在连接本地会话…</p>}
+      {error && <div className="chat-connection-error" role="alert"><p className="chat-error">■ {error}</p><button type="button" className="btn btn--sm" onClick={startNew}>重建本地会话</button></div>}
+      {composer}
+      <div className="chat-home-foot">
+        <span>不确定怎么描述？从一句话开始也可以。</span>
+        <button type="button" onClick={onOpenTriage}>使用单次分诊 →</button>
+      </div>
+    </section>}
 
-    <div className="chat-layout">
-      <section className="chat-main" aria-label="对话">
-        <div className="chat-section-head">
-          <div className="block-label"><span className="cn">当前对话</span><span className="en">CONVERSATION</span></div>
-          <button type="button" className="btn btn--sm" onClick={startNew}>新对话</button>
-        </div>
-        {!session && !error && <p className="chat-empty">正在连接本地会话…</p>}
-        {session && session.messages.length === 0 && <div className="chat-empty">
-          <b>先说说你遇到了什么。</b>
-          <p>一句话、报错、日志都可以。信息不足时我会追问；补充新线索后再查历史 Issue。</p>
-        </div>}
+    {hasConversation && <section className="chat-thread" aria-label="对话">
+      <div className="chat-section-head">
+        <div className="block-label"><span className="cn">问题排查</span><span className="en">CONVERSATION</span></div>
+        <button type="button" className="btn btn--sm" onClick={startNew}>新对话</button>
+      </div>
+      <div className="chat-thread-content">
         <div className="chat-messages" aria-live="polite">
           {session?.messages.map((message) => <article className={`chat-message chat-message--${message.role}`} key={message.id}>
             <div className="chat-message-meta">{message.role === 'user' ? '你' : 'Issue Agent'} · {message.action === 'retrieve' ? '已检索证据' : message.action === 'clarify' ? '需要澄清' : message.action === 'reply' ? '基于当前上下文' : '对话'}</div>
@@ -116,19 +129,10 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
           <div ref={endRef} />
         </div>
         {(error || session?.last_error) && <p className="chat-error">■ {error || session?.last_error}</p>}
-        <div className="chat-composer">
-          <label className="field-label" htmlFor="chat-input">继续说</label>
-          <textarea
-            id="chat-input" className="field-textarea" value={draft} maxLength={12000}
-            placeholder="描述现象，或追问：第一条为什么像？"
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }}
-          />
-          <div className="chat-composer-foot"><span>Enter 发送 · Shift + Enter 换行</span><button type="button" className="btn btn--primary" disabled={!session || busy || !draft.trim()} onClick={() => void send()}>发送消息</button></div>
-        </div>
-      </section>
-
-      <aside className="chat-side" aria-label="问题卡片与候选证据">
+        {composer}
+        <details className="chat-evidence">
+          <summary>查看已知线索与历史候选 <span>{session?.facts.length || 0} 条线索 · {session?.candidates.length || 0} 条候选</span></summary>
+          <div className="chat-evidence-content">
         <section className="block">
           <div className="block-label"><span className="cn">已知线索</span><span className="en">USER FACTS</span></div>
           {session?.facts.length ? <ul className="chat-facts">{session.facts.map((fact, index) => <li key={`${fact.source_message_id}-${index}`}>{fact.value}</li>)}</ul> : <p className="chat-side-note">只记录你明确说出的故障线索，不把模型猜测写入问题卡片。</p>}
@@ -149,7 +153,9 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
           {session?.last_elapsed_ms != null && <p className="chat-side-note">上一轮耗时 {session.last_elapsed_ms} ms{session.prompt_tokens != null ? ` · 已记录输入 ${session.prompt_tokens} token` : ''}</p>}
           <button type="button" className="btn btn--sm" onClick={onOpenTriage}>转到单次分诊</button>
         </section>
-      </aside>
-    </div>
+          </div>
+        </details>
+      </div>
+    </section>}
   </main>
 }
