@@ -29,13 +29,16 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
   const [notice, setNotice] = useState<string | null>(null)
   const [isSending, setIsSending] = useState(false)
   const loadedRef = useRef(false)
+  const selectionEpochRef = useRef(0)
   const endRef = useRef<HTMLDivElement | null>(null)
   const sessionId = session?.session_id
   const sessionStatus = session?.status
 
   const refreshSessions = useCallback(async () => setSessions(await listChatSessions()), [])
 
-  const forgetMissingSession = useCallback(() => {
+  const forgetMissingSession = useCallback((missingId: string) => {
+    if (window.localStorage.getItem(STORAGE_KEY) !== missingId) return
+    selectionEpochRef.current += 1
     window.localStorage.removeItem(STORAGE_KEY)
     setSession(null)
     setNotice('旧会话已过期。请选择仓库开始新对话。')
@@ -46,15 +49,19 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
     if (loadedRef.current) return
     loadedRef.current = true
     const savedId = window.localStorage.getItem(STORAGE_KEY)
+    const loadEpoch = selectionEpochRef.current
     const load = async () => {
       try {
         const [available, history] = await Promise.all([listChatRepositories(), listChatSessions()])
         setRepositories(available)
         setSessions(history)
-        if (savedId) setSession(await getChatSession(savedId))
+        if (savedId) {
+          const restored = await getChatSession(savedId)
+          if (selectionEpochRef.current === loadEpoch && window.localStorage.getItem(STORAGE_KEY) === savedId) setSession(restored)
+        }
       } catch (caught) {
         if (savedId && caught instanceof ChatApiError && caught.status === 404) {
-          forgetMissingSession()
+          forgetMissingSession(savedId)
         } else {
           setError('暂时无法连接对话服务，请确认后端已经启动。')
         }
@@ -66,9 +73,11 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
   useEffect(() => {
     if (!sessionId || !sessionStatus || !activeStates.has(sessionStatus)) return
     const timer = window.setInterval(() => {
-      getChatSession(sessionId).then(setSession).catch((caught) => {
+      getChatSession(sessionId).then((updated) => {
+        if (window.localStorage.getItem(STORAGE_KEY) === sessionId) setSession(updated)
+      }).catch((caught) => {
         if (caught instanceof ChatApiError && caught.status === 404) {
-          forgetMissingSession()
+          forgetMissingSession(sessionId)
         } else {
           setError('会话连接中断，请稍后重试。')
         }
@@ -82,6 +91,7 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [session?.messages.length])
 
   const startNew = () => {
+    selectionEpochRef.current += 1
     window.localStorage.removeItem(STORAGE_KEY)
     setSession(null)
     setSelectedRepository('')
@@ -92,8 +102,10 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
 
   const createForRepository = async () => {
     if (!selectedRepository) return
+    const createEpoch = ++selectionEpochRef.current
     try {
       const created = await createChatSession(selectedRepository)
+      if (selectionEpochRef.current !== createEpoch) return
       window.localStorage.setItem(STORAGE_KEY, created.session_id)
       setSession(created)
       setError(null)
@@ -105,15 +117,17 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
   }
 
   const openSession = async (id: string) => {
+    const openEpoch = ++selectionEpochRef.current
     try {
       const opened = await getChatSession(id)
+      if (selectionEpochRef.current !== openEpoch) return
       window.localStorage.setItem(STORAGE_KEY, id)
       setSession(opened)
       setDraft('')
       setNotice(null)
       setError(null)
     } catch {
-      forgetMissingSession()
+      if (window.localStorage.getItem(STORAGE_KEY) === id) forgetMissingSession(id)
     }
   }
 
@@ -126,10 +140,11 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
     try {
       await sendChatMessage(session.session_id, content, window.crypto.randomUUID())
       if (!suggestion) setDraft('')
-      setSession(await getChatSession(session.session_id))
+      const updated = await getChatSession(session.session_id)
+      if (window.localStorage.getItem(STORAGE_KEY) === session.session_id) setSession(updated)
     } catch (caught) {
       if (caught instanceof ChatApiError && caught.status === 404) {
-        forgetMissingSession()
+        forgetMissingSession(session.session_id)
       } else {
         setError(caught instanceof Error ? caught.message : '消息发送失败')
       }
