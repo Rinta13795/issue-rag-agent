@@ -58,3 +58,4 @@ data/
 # 日志
 *.log
 logs/
+.local/

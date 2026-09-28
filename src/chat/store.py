@@ -1,0 +1,156 @@
+"""本地单进程聊天状态仓库；正式入口使用 SQLite 保存会话。"""
+
+import json
+import sqlite3
+import threading
+import time
+import uuid
+from collections import OrderedDict
+from collections.abc import Callable
+from pathlib import Path
+
+from config import CHAT_MAX_MESSAGES, CHAT_MAX_SESSIONS, CHAT_SESSION_TTL_SECONDS
+from src.chat.models import ChatMessage, ChatSession, utc_now
+
+
+class ChatStore:
+    def __init__(
+        self,
+        max_sessions: int = CHAT_MAX_SESSIONS,
+        ttl_seconds: int = CHAT_SESSION_TTL_SECONDS,
+        db_path: str | Path | None = None,
+    ):
+        self.max_sessions = max_sessions
+        self.ttl_seconds = ttl_seconds
+        self._lock = threading.RLock()
+        self._sessions: OrderedDict[str, tuple[float, ChatSession]] = OrderedDict()
+        self._client_ids: dict[str, dict[str, tuple[str, str]]] = {}
+        self._db: sqlite3.Connection | None = None
+        if db_path is not None:
+            path = Path(db_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._db = sqlite3.connect(path, check_same_thread=False)
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS chat_sessions ("
+                "session_id TEXT PRIMARY KEY, last_seen REAL NOT NULL, "
+                "payload TEXT NOT NULL, client_ids TEXT NOT NULL)"
+            )
+            self._db.commit()
+            self._restore()
+
+    def _restore(self) -> None:
+        assert self._db is not None
+        now = time.time()
+        rows = self._db.execute(
+            "SELECT session_id, last_seen, payload, client_ids "
+            "FROM chat_sessions ORDER BY last_seen"
+        ).fetchall()
+        for session_id, last_seen, payload, client_ids in rows:
+            if now - last_seen > self.ttl_seconds:
+                self._db.execute("DELETE FROM chat_sessions WHERE session_id = ?", (session_id,))
+                continue
+            session = ChatSession.model_validate_json(payload)
+            if session.status in ("thinking", "retrieving", "answering"):
+                session.status = "failed"
+                session.last_error = "服务重启中断了上一轮分析，请重新发送或补充问题。"
+            self._sessions[session_id] = (last_seen, session)
+            self._client_ids[session_id] = {
+                key: tuple(value) for key, value in json.loads(client_ids).items()
+            }
+            self._persist(session_id)
+        while len(self._sessions) > self.max_sessions:
+            self._remove(next(iter(self._sessions)))
+        self._db.commit()
+
+    def _persist(self, session_id: str) -> None:
+        if self._db is None:
+            return
+        last_seen, session = self._sessions[session_id]
+        self._db.execute(
+            "INSERT OR REPLACE INTO chat_sessions VALUES (?, ?, ?, ?)",
+            (session_id, last_seen, session.model_dump_json(), json.dumps(self._client_ids[session_id])),
+        )
+        self._db.commit()
+
+    def _remove(self, session_id: str) -> None:
+        self._sessions.pop(session_id, None)
+        self._client_ids.pop(session_id, None)
+        if self._db is not None:
+            self._db.execute("DELETE FROM chat_sessions WHERE session_id = ?", (session_id,))
+            self._db.commit()
+
+    def _cleanup(self) -> None:
+        now = time.time()
+        expired = [key for key, (last_seen, _) in self._sessions.items() if now - last_seen > self.ttl_seconds]
+        for key in expired:
+            self._remove(key)
+
+    def create(self) -> ChatSession:
+        with self._lock:
+            self._cleanup()
+            while len(self._sessions) >= self.max_sessions:
+                old_id = next(iter(self._sessions))
+                self._remove(old_id)
+            session = ChatSession(session_id=f"chat_{uuid.uuid4().hex[:16]}")
+            self._sessions[session.session_id] = (time.time(), session)
+            self._client_ids[session.session_id] = {}
+            self._persist(session.session_id)
+            return session.model_copy(deep=True)
+
+    def get(self, session_id: str) -> ChatSession | None:
+        with self._lock:
+            self._cleanup()
+            item = self._sessions.get(session_id)
+            if item is None:
+                return None
+            self._sessions[session_id] = (time.time(), item[1])
+            self._persist(session_id)
+            return item[1].model_copy(deep=True)
+
+    def add_user_message(self, session_id: str, content: str, client_message_id: str) -> tuple[str, bool]:
+        with self._lock:
+            self._cleanup()
+            item = self._sessions.get(session_id)
+            if item is None:
+                raise KeyError(session_id)
+            existing = self._client_ids[session_id].get(client_message_id)
+            if existing is not None:
+                if existing[1] != content:
+                    raise ValueError("同一 client_message_id 不能对应不同消息")
+                return existing[0], False
+            session = item[1]
+            if session.status in ("thinking", "retrieving", "answering"):
+                raise RuntimeError("会话正在处理上一条消息")
+            message_id = f"msg_{uuid.uuid4().hex[:16]}"
+            session.messages.append(ChatMessage(id=message_id, role="user", content=content))
+            session.messages = session.messages[-CHAT_MAX_MESSAGES:]
+            session.status = "thinking"
+            session.last_error = None
+            session.updated_at = utc_now()
+            self._client_ids[session_id][client_message_id] = (message_id, content)
+            self._sessions[session_id] = (time.time(), session)
+            self._persist(session_id)
+            return message_id, True
+
+    def update(self, session_id: str, update_fn: Callable[[ChatSession], None]) -> ChatSession:
+        with self._lock:
+            item = self._sessions.get(session_id)
+            if item is None:
+                raise KeyError(session_id)
+            session = item[1]
+            update_fn(session)
+            session.updated_at = utc_now()
+            self._sessions[session_id] = (time.time(), session)
+            self._persist(session_id)
+            return session.model_copy(deep=True)
+
+
+_CHAT_STORE: ChatStore | None = None
+
+
+def get_chat_store() -> ChatStore:
+    global _CHAT_STORE
+    if _CHAT_STORE is None:
+        project_root = Path(__file__).resolve().parents[2]
+        _CHAT_STORE = ChatStore(db_path=project_root / ".local" / "chat_sessions.sqlite3")
+    return _CHAT_STORE

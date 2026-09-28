@@ -1,6 +1,39 @@
-import type { EvaluationSummary, ExampleItem, RunSnapshot, SystemInfo } from './types'
+import type { ChatSession, EvaluationSummary, ExampleItem, RunSnapshot, SystemInfo } from './types'
 
 const API_BASE = ''
+
+export class ChatApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
+async function chatJson<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new ChatApiError(err.detail || `请求失败 (${res.status})`, res.status)
+  }
+  return res.json()
+}
+
+export async function createChatSession(): Promise<ChatSession> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/sessions`, { method: 'POST' }))
+}
+
+export async function getChatSession(sessionId: string): Promise<ChatSession> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}`))
+}
+
+export async function sendChatMessage(sessionId: string, content: string, clientMessageId: string): Promise<void> {
+  await chatJson(await fetch(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, client_message_id: clientMessageId }),
+  }))
+}
 
 export async function createRun(issueText: string, sampleId?: string): Promise<{ run_id: string; status: string; created_at: string }> {
   const res = await fetch(`${API_BASE}/api/runs`, {

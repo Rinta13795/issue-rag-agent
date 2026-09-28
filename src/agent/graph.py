@@ -2,6 +2,7 @@
 
 from langgraph.graph import END, StateGraph
 from loguru import logger
+import threading
 
 from config import CHROMA_COLLECTION, CHROMA_PERSIST_DIR, CONFIDENCE_THRESHOLD, MAX_RETRIES
 from src.agent.nodes import (
@@ -18,6 +19,7 @@ _HYBRID_RETRIEVER = None
 _RERANKER = None
 _DEPENDENCIES_READY = False
 _COMPILED_GRAPH = None
+_DEPENDENCIES_LOCK = threading.Lock()
 
 
 def get_hybrid_retriever():
@@ -58,13 +60,21 @@ def _ensure_dependencies() -> None:
     global _HYBRID_RETRIEVER, _RERANKER, _DEPENDENCIES_READY
     if _DEPENDENCIES_READY:
         return
+    with _DEPENDENCIES_LOCK:
+        if _DEPENDENCIES_READY:
+            return
+        # 聊天和单次分诊共享重模型；并发首请求只初始化一次。
+        logger.info("初始化 LangGraph 依赖：HybridRetriever + Reranker")
+        _HYBRID_RETRIEVER = get_hybrid_retriever()
+        _RERANKER = get_reranker()
+        configure_dependencies(_HYBRID_RETRIEVER, _RERANKER)
+        _DEPENDENCIES_READY = True
 
-    # 这里才初始化重依赖，保证 from src.agent.graph import run_agent 不会提前加载模型和 Chroma。
-    logger.info("初始化 LangGraph 依赖：HybridRetriever + Reranker")
-    _HYBRID_RETRIEVER = get_hybrid_retriever()
-    _RERANKER = get_reranker()
-    configure_dependencies(_HYBRID_RETRIEVER, _RERANKER)
-    _DEPENDENCIES_READY = True
+
+def get_retrieval_dependencies():
+    """返回已缓存的混合检索器与精排器，供对话入口复用。"""
+    _ensure_dependencies()
+    return _HYBRID_RETRIEVER, _RERANKER
 
 # build_graph的辅助函数
 def should_retry(state: IssueState) -> str:

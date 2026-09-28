@@ -31,6 +31,19 @@ LLM_TIMEOUT = 60
 # LLM 客户端自动重试次数：针对超时、限流等瞬时错误。
 LLM_MAX_RETRIES = 2
 
+# 本地对话入口的有界上下文与输出预算；不改变原有四节点分诊参数。
+CHAT_MAX_MESSAGE_CHARS = 12000
+CHAT_MAX_FACTS = 12
+CHAT_MAX_CANDIDATES = 3
+CHAT_EVIDENCE_CHARS = 400
+CHAT_QUERY_CHARS = 700
+CHAT_RECENT_MESSAGES = 4
+CHAT_SESSION_TTL_SECONDS = 7 * 24 * 3600
+CHAT_MAX_SESSIONS = 20
+CHAT_MAX_MESSAGES = 80
+CHAT_PLANNER_MAX_TOKENS = 480
+CHAT_ANSWER_MAX_TOKENS = 600
+
 
 # Embedding 模型名称：本地 HuggingFace 英文模型，不调用 API。数据集全为英文 issue，改用英文 all-MiniLM-L6-v2。
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"

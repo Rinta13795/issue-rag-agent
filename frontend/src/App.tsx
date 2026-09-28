@@ -14,9 +14,10 @@ import { DecisionSummary } from './components/DecisionSummary'
 import { CandidateList } from './components/CandidateList'
 import { EvaluationNotes } from './components/EvaluationNotes'
 import { Footer } from './components/Footer'
+import { ChatWorkspace } from './components/ChatWorkspace'
 
 export const App: React.FC = () => {
-  const [view, setView] = useState<'workspace' | 'knowledge' | 'quality'>('workspace')
+  const [view, setView] = useState<'chat' | 'workspace' | 'knowledge' | 'quality'>('chat')
   const [examples, setExamples] = useState<ExampleItem[]>([])
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null)
   const [evaluation, setEvaluation] = useState<EvaluationSummary | null>(null)
@@ -86,19 +87,21 @@ export const App: React.FC = () => {
   return (
     <div className="agent-shell">
       <aside className="platform-sidebar">
-        <a className="platform-brand" href="#" onClick={() => setView('workspace')}>ISSUE / AGENT<span>研发智能体平台</span></a>
+        <a className="platform-brand" href="#" onClick={(event) => { event.preventDefault(); setView('chat') }}>ISSUE / AGENT<span>研发智能体平台</span></a>
         <div className="workspace-identity"><span className="field-label">WORKSPACE</span><b>Engineering Team</b><span className="sidebar-meta">研发协作空间 / 本地</span></div>
         <nav className="platform-nav" aria-label="主导航">
-          <button className={view === 'workspace' ? 'selected' : ''} onClick={() => setView('workspace')}><span>01</span> Agent 工作台 <span>→</span></button>
-          <button className={view === 'knowledge' ? 'selected' : ''} onClick={() => setView('knowledge')}><span>02</span> 知识与数据源 <span>→</span></button>
-          <button className={view === 'quality' ? 'selected' : ''} onClick={() => setView('quality')}><span>03</span> 质量评估 <span>→</span></button>
+          <button className={view === 'chat' ? 'selected' : ''} onClick={() => setView('chat')}><span>01</span> 对话排查 <span>→</span></button>
+          <button className={view === 'workspace' ? 'selected' : ''} onClick={() => setView('workspace')}><span>02</span> 单次分诊 <span>→</span></button>
+          <button className={view === 'knowledge' ? 'selected' : ''} onClick={() => setView('knowledge')}><span>03</span> 知识与数据源 <span>→</span></button>
+          <button className={view === 'quality' ? 'selected' : ''} onClick={() => setView('quality')}><span>04</span> 质量评估 <span>→</span></button>
         </nav>
-        <div className="sidebar-session"><span className="field-label">CURRENT TASK</span><p>{isAnalyzing ? '正在执行分诊' : snapshot ? '本次分析记录' : '尚未开始任务'}</p><span className="sidebar-meta">{snapshot?.run_id || '提交问题后生成执行记录'}</span></div>
+        <div className="sidebar-session"><span className="field-label">CURRENT TASK</span><p>{view === 'chat' ? '连续问题排查' : isAnalyzing ? '正在执行分诊' : snapshot ? '本次分析记录' : '尚未开始任务'}</p><span className="sidebar-meta">{view === 'chat' ? '对话、线索与历史候选' : snapshot?.run_id || '提交问题后生成执行记录'}</span></div>
         <div className="sidebar-bottom"><b>Issue Triage Agent</b><span className="sidebar-meta">检索增强 · 证据推理</span><span className="tag">{systemInfo ? '服务已连接' : '服务未连接'}</span></div>
       </aside>
       <div className="platform-main">
-      <div className="platform-topbar"><span>研发协作空间 / {view === 'workspace' ? 'Agent 工作台' : view === 'knowledge' ? '知识与数据源' : '质量评估'}</span><span>LOCAL WORKSPACE <span className="tag">研发团队</span></span></div>
+      <div className="platform-topbar"><span>研发协作空间 / {view === 'chat' ? '对话排查' : view === 'workspace' ? '单次分诊' : view === 'knowledge' ? '知识与数据源' : '质量评估'}</span><span>LOCAL WORKSPACE <span className="tag">研发团队</span></span></div>
       <div className="page-container">
+      {view === 'chat' && <ChatWorkspace onOpenTriage={() => setView('workspace')} />}
       {view === 'workspace' && <>
       <Header systemInfo={systemInfo} />
 
