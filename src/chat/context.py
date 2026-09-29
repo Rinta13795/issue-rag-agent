@@ -116,11 +116,11 @@ def search_query(facts: list[ChatFact]) -> str:
 
 
 _FAULT_SIGNAL = re.compile(r"error|exception|traceback|fail|crash|报错|失败|崩溃|卡住|无法|不能|不了", re.I)
-_SEARCH_REQUEST = re.compile(r"查|搜|有没有.*解决|有人解决|先找", re.I)
+_SEARCH_REQUEST = re.compile(r"查|搜|有没有.*解决|有人解决|先找|有没有人反馈|有人遇到|类似问题|反馈过", re.I)
 
 
 def fallback_search_query(session: ChatSession, current_message_id: str) -> str:
-    """规划器漏提事实时，用用户原话中的故障现象做一次保守检索。"""
+    """规划器漏提事实时，从故障现象或明确的历史反馈请求中保留原话检索。"""
     current = next(message for message in session.messages if message.id == current_message_id)
     messages = [current]
     if _SEARCH_REQUEST.search(current.content):
@@ -133,6 +133,9 @@ def fallback_search_query(session: ChatSession, current_message_id: str) -> str:
             line = line.strip()
             if _FAULT_SIGNAL.search(line):
                 return line[:min(CHAT_QUERY_CHARS, 240)]
+    # 行为不符合预期同样可能是 Issue；“有没有人反馈”不是必须带错误码的技术故障。
+    if _SEARCH_REQUEST.search(current.content) and len(current.content.strip()) >= 20:
+        return select_message_excerpt(current.content, min(CHAT_QUERY_CHARS, 240)).strip()
     return ""
 
 

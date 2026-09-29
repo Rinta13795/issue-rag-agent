@@ -93,6 +93,32 @@ def test_vague_symptom_searches_before_asking_for_error_code():
     assert result.messages[-1].action == "retrieve"
 
 
+def test_explicit_product_feedback_searches_before_asking_for_error_code():
+    store = ChatStore()
+    session = store.create("vscode")
+    question = "有没有人反馈定时任务每次都给我做一个 App，我只想让 Agent 执行？"
+    planner = FakeLLM([{"action": "clarify", "facts": [], "open_question": "报错是什么？"}])
+    answer = FakeLLM([{"answer": "找到一条可能相关的产品反馈，但仍需核对原文。", "citations": ["vscode:101"]}])
+    retriever = FakeRetriever()
+    service = ChatService(store, planner, answer, lambda repository_id: (retriever, FakeReranker()))
+    result = send(service, store, session.session_id, question, "one")
+    assert retriever.queries == [question]
+    assert result.retrieval_calls == 1
+    assert result.messages[-1].action == "retrieve"
+
+
+def test_product_feedback_without_matching_evidence_does_not_ask_for_error_code():
+    store = ChatStore()
+    session = store.create("vscode")
+    planner = FakeLLM([{"action": "retrieve", "facts": []}])
+    answer = FakeLLM([{"answer": "没有证据支持同类反馈。", "citations": []}])
+    service = ChatService(store, planner, answer, lambda repository_id: (FakeRetriever(), FakeReranker()))
+    result = send(service, store, session.session_id,
+                  "有没有人反馈定时任务每次都给我做一个 App，我只想让 Agent 执行？", "one")
+    assert "没有足够证据" in result.messages[-1].content
+    assert "报错原文" not in result.messages[-1].content
+
+
 def test_followup_about_solution_does_not_repeat_failed_search_or_error_code_question():
     store = ChatStore()
     session = store.create("vscode")
