@@ -131,7 +131,13 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
   }
 
   const createForRepository = async (repositoryId = selectedRepository, issueUrl?: string) => {
-    if (!repositoryId) return
+    if (!repositoryId) {
+      setError('请先选择一个已有仓库快照。')
+      const picker = document.getElementById('chat-repository')
+      picker?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      picker?.focus()
+      return
+    }
     const createEpoch = ++selectionEpochRef.current
     try {
       const created = await createChatSession(repositoryId, issueUrl)
@@ -147,7 +153,11 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
   }
 
   const importIssue = async () => {
-    if (!issueLink.trim()) return
+    if (!issueLink.trim()) {
+      setError('请先粘贴 GitHub Issue 链接，再读取。')
+      document.getElementById('chat-issue-link')?.focus()
+      return
+    }
     const importEpoch = ++selectionEpochRef.current
     setError(null)
     setSyncStatus('正在读取源 Issue…')
@@ -175,7 +185,11 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
   }
 
   const syncAndCreate = async () => {
-    if (!githubRepository.trim()) return
+    if (!githubRepository.trim()) {
+      setError('请先输入公开仓库名，格式为 owner/repo。')
+      document.getElementById('chat-github-repository')?.focus()
+      return
+    }
     const syncEpoch = ++selectionEpochRef.current
     setError(null)
     setSyncStatus('正在提交仓库…')
@@ -370,13 +384,13 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
         <div className="chat-repository-add">
           <label className="field-label" htmlFor="chat-issue-link">导入已有 GitHub Issue</label>
           <input id="chat-issue-link" className="field-input" value={issueLink} onChange={(event) => setIssueLink(event.target.value)} placeholder="https://github.com/owner/repo/issues/123" />
-          <button type="button" className="btn btn--primary" disabled={!issueLink.trim() || Boolean(syncStatus)} onClick={() => void importIssue()}>读取 Issue 并开始对话</button>
+          <button type="button" className="btn btn--primary" disabled={Boolean(syncStatus)} onClick={() => void importIssue()}>读取 Issue 并开始对话</button>
         </div>
         <div className="chat-repository-add">
           <label className="field-label" htmlFor="chat-github-repository">还没有 Issue？先选择仓库</label>
           <input id="chat-github-repository" className="field-input" value={githubRepository} onChange={(event) => setGithubRepository(event.target.value)} placeholder="owner/repo，例如 HKUDS/OpenHarness" />
           <p className="chat-side-note">首次会同步最近更新的最多 300 条公开 Issue，建立本地快照；已同步仓库会直接复用。不会实时读取 PR、代码或文档。</p>
-          <button type="button" className="btn" disabled={!githubRepository.trim() || Boolean(syncStatus)} onClick={() => void syncAndCreate()}>同步并开始对话</button>
+          <button type="button" className="btn" disabled={Boolean(syncStatus)} onClick={() => void syncAndCreate()}>同步并开始对话</button>
           {syncStatus && <p className="chat-connection" role="status">{syncStatus}。首次索引可能需要几分钟。</p>}
         </div>
         <div className="chat-repository-existing">
@@ -386,7 +400,7 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
             {repositories.map((repo) => <option key={repo.id} value={repo.id}>{repo.label} · {repo.issue_count.toLocaleString()} 条 Issue</option>)}
           </select>
           {selectedRepository && <p className="chat-side-note">{repositories.find((repo) => repo.id === selectedRepository)?.source}；仓库选定后，本对话中不可切换。</p>}
-          <button type="button" className="btn btn--primary" disabled={!selectedRepository || Boolean(syncStatus)} onClick={() => void createForRepository()}>开始对话</button>
+          <button type="button" className="btn btn--primary" disabled={Boolean(syncStatus)} onClick={() => void createForRepository()}>开始对话</button>
         </div>
       </div>}
       {notice && <p className="chat-connection" role="status">{notice}</p>}
