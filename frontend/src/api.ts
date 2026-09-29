@@ -56,6 +56,10 @@ export async function sendChatMessage(sessionId: string, content: string, client
   }))
 }
 
+export async function retryChatMessage(sessionId: string): Promise<void> {
+  await chatJson(await fetch(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}/retry`, { method: 'POST' }))
+}
+
 export async function createRun(issueText: string, sampleId?: string): Promise<{ run_id: string; status: string; created_at: string }> {
   const res = await fetch(`${API_BASE}/api/runs`, {
     method: 'POST',

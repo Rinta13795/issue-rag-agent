@@ -264,6 +264,19 @@ def send_chat_message(session_id: str, request: SendChatMessageRequest) -> SendC
     return SendChatMessageResponse(message_id=message_id, session_id=session_id, status=session.status)
 
 
+@app.post("/api/chat/sessions/{session_id}/retry", response_model=SendChatMessageResponse, status_code=202)
+def retry_chat_message(session_id: str) -> SendChatMessageResponse:
+    store = get_chat_store()
+    try:
+        message_id = store.retry_failed_turn(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    get_chat_runner().submit(session_id, message_id)
+    return SendChatMessageResponse(message_id=message_id, session_id=session_id, status="thinking")
+
+
 # ==================== 前端静态资源挂载 ====================
 
 frontend_dist = Path(__file__).parent / "frontend" / "dist"

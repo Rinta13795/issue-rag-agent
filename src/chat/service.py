@@ -217,13 +217,18 @@ class ChatService:
             self._finish(session_id, body[:1600], plan.action, citations, plan.open_question)
         except Exception as exc:
             error_type = type(exc).__name__
-            logger.warning("聊天任务失败 session_id={} error_type={}", session_id, error_type)
+            cause_type = type(exc.__cause__).__name__ if exc.__cause__ else "none"
+            logger.warning("聊天任务失败 session_id={} error_type={} cause_type={}", session_id, error_type, cause_type)
             if error_type in ("AuthenticationError", "PermissionDeniedError"):
-                public_error = "模型服务鉴权失败。请更新本地 .env 中的 DEEPSEEK_API_KEY 后重启服务。"
+                public_error = "模型服务拒绝了请求。请检查本地服务配置；这条消息已保留。"
+            elif "ConnectionError" in error_type or error_type == "APIConnectionError":
+                public_error = "模型服务连接中断。这条消息已保留，可以重试本轮。"
+            elif "Timeout" in error_type:
+                public_error = "模型服务响应超时。这条消息已保留，可以重试本轮。"
             elif getattr(exc, "status_code", None) == 402:
-                public_error = "模型服务当前不可用，请检查账户余额或额度。"
+                public_error = "模型服务额度不足。这条消息已保留。"
             else:
-                public_error = "当前分析未完成。请检查模型服务配置或稍后重试。"
+                public_error = "本轮分析没有完成。这条消息已保留，可以重试本轮。"
             try:
                 self.store.update(session_id, lambda session: (
                     setattr(session, "status", "failed"),

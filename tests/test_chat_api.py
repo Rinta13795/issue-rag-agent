@@ -88,3 +88,20 @@ def test_github_sync_api_validation_and_status():
         assert response.json()["status"] == "fetching"
         assert client.get("/api/chat/repositories/sync/sync_1").status_code == 200
         assert client.get("/api/chat/repositories/sync/missing").status_code == 404
+
+
+def test_retry_endpoint_resubmits_same_message_without_duplicate():
+    store = ChatStore()
+    runner = FakeRunner()
+    session_id = store.create("vscode").session_id
+    message_id, _ = store.add_user_message(session_id, "构建失败", "local-1")
+    store.update(session_id, lambda session: setattr(session, "status", "failed"))
+    with patch("api.get_chat_store", return_value=store), patch("api.get_chat_runner", return_value=runner):
+        client = TestClient(app)
+        response = client.post(f"/api/chat/sessions/{session_id}/retry")
+        assert response.status_code == 202
+        assert response.json()["message_id"] == message_id
+        assert runner.submitted == [(session_id, message_id)]
+        assert len(store.get(session_id).messages) == 1
+        assert client.post(f"/api/chat/sessions/{session_id}/retry").status_code == 409
+        assert client.post("/api/chat/sessions/missing/retry").status_code == 404

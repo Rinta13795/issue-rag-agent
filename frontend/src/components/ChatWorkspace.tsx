@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChatApiError, createChatSession, getChatSession, getRepositorySync, listChatRepositories, listChatSessions, sendChatMessage, syncChatRepository } from '../api'
+import { ChatApiError, createChatSession, getChatSession, getRepositorySync, listChatRepositories, listChatSessions, retryChatMessage, sendChatMessage, syncChatRepository } from '../api'
 import type { ChatRepository, ChatSession, ChatSessionSummary } from '../types'
 
 const STORAGE_KEY = 'issue-rag-local-chat-session'
@@ -178,6 +178,21 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
     }
   }
 
+  const retry = async () => {
+    if (!session || session.status !== 'failed' || isSending) return
+    setIsSending(true)
+    setError(null)
+    try {
+      await retryChatMessage(session.session_id)
+      const updated = await getChatSession(session.session_id)
+      if (window.localStorage.getItem(STORAGE_KEY) === session.session_id) setSession(updated)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '重试失败')
+    } finally {
+      setIsSending(false)
+    }
+  }
+
   const busy = isSending || Boolean(session && activeStates.has(session.status))
   const activeRepository = repositories.find((repo) => repo.id === session?.repository_id)
   const issueUrl = (id: string): string | null => {
@@ -271,7 +286,10 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
           {busy && <div className="chat-progress" role="status">{statusLabels[session?.status || ''] || '正在发送'}…</div>}
           <div ref={endRef} />
         </div>
-        {(error || session?.last_error) && <p className="chat-error">■ {error || session?.last_error}</p>}
+        {(error || session?.last_error) && <div className="chat-connection-error" role="alert">
+          <p className="chat-error">■ {error || session?.last_error}</p>
+          {session?.status === 'failed' && <button type="button" className="btn btn--sm" disabled={isSending} onClick={() => void retry()}>重试这一轮</button>}
+        </div>}
         {notice && <p className="chat-connection" role="status">{notice}</p>}
         {session?.repository_id ? composer : <p className="chat-side-note">这是升级前未绑定仓库的旧对话。请点“新对话”并选择仓库后继续。</p>}
         <details className="chat-evidence">

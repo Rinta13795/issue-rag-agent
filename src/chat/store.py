@@ -143,6 +143,26 @@ class ChatStore:
             self._persist(session_id)
             return message_id, True
 
+    def retry_failed_turn(self, session_id: str) -> str:
+        """重新处理最后一条失败消息，不追加用户消息，也不丢失原对话。"""
+        with self._lock:
+            self._cleanup()
+            item = self._sessions.get(session_id)
+            if item is None:
+                raise KeyError(session_id)
+            session = item[1]
+            if session.status != "failed" or not session.messages or session.messages[-1].role != "user":
+                raise RuntimeError("当前没有可重试的失败消息")
+            message_id = session.messages[-1].id
+            session.status = "thinking"
+            session.last_error = None
+            # 失败可能发生在回答阶段；重试时允许重新检索，而不是误判为“已查过”。
+            session.last_search_fingerprint = None
+            session.updated_at = utc_now()
+            self._sessions[session_id] = (time.time(), session)
+            self._persist(session_id)
+            return message_id
+
     def update(self, session_id: str, update_fn: Callable[[ChatSession], None]) -> ChatSession:
         with self._lock:
             item = self._sessions.get(session_id)
