@@ -56,3 +56,20 @@ def test_retry_failed_turn_reuses_original_message_after_restart(tmp_path):
         pass
     else:
         assert False, "正在运行的轮次不应重复提交"
+
+
+def test_interrupted_issue_publish_is_not_repeated_after_restart(tmp_path):
+    path = tmp_path / "chat.sqlite3"
+    store = ChatStore(db_path=path)
+    session_id = store.create("gh-repo").session_id
+    draft = store.save_issue_draft(session_id, "Crash on startup", "Steps").issue_draft
+    store.claim_issue_publish(session_id, draft.draft_id, draft.version)
+
+    restored = ChatStore(db_path=path)
+    assert restored.get(session_id).issue_draft.status == "uncertain"
+    try:
+        restored.claim_issue_publish(session_id, draft.draft_id, draft.version)
+    except RuntimeError:
+        pass
+    else:
+        assert False, "网络结果未知时不能再次创建 Issue"

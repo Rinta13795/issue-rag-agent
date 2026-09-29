@@ -769,6 +769,33 @@ body { padding: 0; background: var(--paper); }
 .chat-thread-content { width: min(100%, 800px); margin: 0 auto; display: flex; flex: 1; flex-direction: column; }
 .chat-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--rule); padding-bottom: 20px; }
 .chat-section-head .block-label { margin-bottom: 0; }
+.chat-source-issue { border-bottom: 1px solid var(--rule); padding: 20px 0; }
+.chat-source-issue .block-label { margin-bottom: 17px; }
+.chat-source-title { display: block; color: var(--ink); font-size: 16px; font-weight: 700; line-height: 1.9; overflow-wrap: anywhere; text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 3px; }
+.chat-source-title:hover { text-decoration-color: var(--accent); }
+.chat-source-body { color: var(--ink-body); font-size: 14px; line-height: 1.9; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; }
+.chat-source-comments { border-top: 1px solid var(--rule); padding-top: 20px; margin-top: 20px; }
+.chat-source-comments summary { color: var(--ink); cursor: pointer; font-size: 14px; font-weight: 700; }
+.chat-source-comments p { color: var(--ink-body); font-size: 14px; line-height: 1.9; white-space: pre-wrap; overflow-wrap: anywhere; border-bottom: 1px solid var(--rule); padding: 16px 0; }
+.chat-issue-action { border-top: 1px solid var(--rule); padding-top: 32px; margin-top: 32px; }
+.chat-issue-action .field-label { display: block; margin: 20px 0 10px; }
+.chat-issue-action .field-input, .chat-issue-action .field-textarea { display: block; width: 100%; }
+.chat-issue-action .field-textarea { min-height: 240px; white-space: pre-wrap; }
+.chat-draft-duplicates { border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding: 16px 0; margin: 20px 0; }
+.chat-draft-duplicates a { display: block; color: var(--ink-body); font-size: 14px; line-height: 1.9; text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 3px; }
+.chat-draft-duplicates a:hover { text-decoration-color: var(--accent); }
+.chat-draft-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin-top: 20px; }
+.chat-publish-check { display: flex; align-items: center; gap: 7px; color: var(--ink-soft); font-size: 14px; line-height: 1.9; }
+.chat-memory { border-top: 1px solid var(--rule); padding-top: 32px; margin-top: 32px; }
+.chat-memory-proposal { border-top: 1px solid var(--rule); padding-top: 20px; margin-top: 20px; }
+.chat-memory-proposal .field-label { display: block; margin: 20px 0 10px; }
+.chat-memory-proposal .field-textarea { display: block; width: 100%; min-height: 120px; }
+.chat-memory-proposal select { display: block; width: 100%; padding: 9px 12px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--ink); font-size: 14px; }
+.chat-memory-proposal .chat-publish-check, .chat-memory-proposal .btn { margin-top: 20px; }
+.chat-memory-list { border-top: 1px solid var(--rule); margin-top: 20px; }
+.chat-memory-list > div { border-bottom: 1px solid var(--rule); padding: 20px 0; }
+.chat-memory-list p { color: var(--ink-body); font-size: 14px; line-height: 1.9; }
+.chat-memory-list small { display: block; color: var(--ink-faint); font: 11px/1.9 var(--mono); margin-bottom: 10px; }
 .chat-messages { flex: 1; min-height: 240px; padding-top: 18px; }
 .chat-message { padding: 20px 0; border-bottom: 1px solid var(--rule); }
 .chat-message-meta, .chat-citation, .chat-candidate-id { display: block; font: 11px/1.9 var(--mono); color: var(--ink-faint); }

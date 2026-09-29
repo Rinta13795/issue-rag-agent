@@ -41,11 +41,12 @@ from src.demo.models import (
 )
 from src.demo.run_store import get_run_store
 from src.demo.runner import get_observable_runner
-from src.chat.models import ChatRepository, ChatSession, ChatSessionSummary, CreateChatSessionRequest, SendChatMessageRequest, SendChatMessageResponse, SyncRepositoryRequest, SyncRepositoryStatus
-from src.chat.github_sync import get_sync_manager
+from src.chat.models import ChatRepository, ChatSession, ChatSessionSummary, ConfirmMemoryRequest, CreateChatSessionRequest, MemoryProposal, MemoryRecord, PreviewIssueRequest, PublishIssueDraftRequest, SendChatMessageRequest, SendChatMessageResponse, SourceIssue, SyncRepositoryRequest, SyncRepositoryStatus, UpdateIssueDraftRequest
+from src.chat.github_sync import GitHubPublishError, create_github_issue, fetch_issue, get_sync_manager, repository_id
 from src.chat.repositories import list_repositories, repository_exists
 from src.chat.service import get_chat_runner
 from src.chat.store import get_chat_store
+from src.chat.memory import get_memory_store
 
 app = FastAPI(
     title="Issue RAG Agent API",
@@ -208,6 +209,15 @@ def get_chat_repositories() -> list[ChatRepository]:
     return list_repositories()
 
 
+@app.post("/api/chat/issues/preview", response_model=SourceIssue)
+def preview_chat_issue(request: PreviewIssueRequest) -> SourceIssue:
+    """实时读取用户指定的公开 Issue，供仓库同步与导入预览。"""
+    try:
+        return fetch_issue(request.issue_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.post("/api/chat/repositories/sync", response_model=SyncRepositoryStatus, status_code=202)
 def sync_chat_repository(request: SyncRepositoryRequest) -> SyncRepositoryStatus:
     try:
@@ -233,7 +243,17 @@ def list_chat_sessions() -> list[ChatSessionSummary]:
 def create_chat_session(request: CreateChatSessionRequest) -> ChatSession:
     if not repository_exists(request.repository_id):
         raise HTTPException(status_code=422, detail="仓库未建立本地索引，请先同步后再选择")
-    return get_chat_store().create(repository_id=request.repository_id)
+    source_issue = None
+    if request.issue_url:
+        try:
+            source_issue = fetch_issue(request.issue_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if repository_id(source_issue.repository) != request.repository_id and not (
+            request.repository_id == "openharness" and source_issue.repository.lower() == "hkuds/openharness"
+        ):
+            raise HTTPException(status_code=422, detail="Issue 不属于当前选择的仓库")
+    return get_chat_store().create(repository_id=request.repository_id, source_issue=source_issue)
 
 
 @app.get("/api/chat/sessions/{session_id}", response_model=ChatSession)
@@ -275,6 +295,107 @@ def retry_chat_message(session_id: str) -> SendChatMessageResponse:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     get_chat_runner().submit(session_id, message_id)
     return SendChatMessageResponse(message_id=message_id, session_id=session_id, status="thinking")
+
+
+@app.post("/api/chat/sessions/{session_id}/issue-draft", response_model=ChatSession)
+def create_chat_issue_draft(session_id: str) -> ChatSession:
+    """显式生成可编辑草稿，不执行 GitHub 写入。"""
+    try:
+        return get_chat_runner().service.create_draft(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("Issue 草稿生成失败 error_type={}", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="草稿生成失败；原对话没有丢失，请稍后重试") from exc
+
+
+@app.patch("/api/chat/sessions/{session_id}/issue-draft", response_model=ChatSession)
+def edit_chat_issue_draft(session_id: str, request: UpdateIssueDraftRequest) -> ChatSession:
+    try:
+        return get_chat_store().edit_issue_draft(session_id, request.title, request.body, request.version)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/chat/sessions/{session_id}/issue-draft/publish", response_model=ChatSession)
+def publish_chat_issue_draft(session_id: str, request: PublishIssueDraftRequest) -> ChatSession:
+    """只发布用户确认的当前草稿版本；占用发布状态防止重复点击。"""
+    if not request.confirmed:
+        raise HTTPException(status_code=422, detail="发布前须确认公开仓库和草稿正文")
+    store = get_chat_store()
+    snapshot = store.get(session_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期")
+    repo = next((item for item in list_repositories() if item.id == snapshot.repository_id), None)
+    if repo is None or not repo.github_url:
+        raise HTTPException(status_code=422, detail="该对话没有可发布的 GitHub 仓库；可以复制草稿自行提交")
+    try:
+        claimed = store.claim_issue_publish(session_id, request.draft_id, request.version)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    draft = claimed.issue_draft
+    if draft.status == "published":
+        return claimed
+    try:
+        url, number = create_github_issue(repo.github_url.removeprefix("https://github.com/"), draft.title, draft.body)
+    except GitHubPublishError as exc:
+        store.finish_issue_publish(session_id, draft.draft_id, None, None, uncertain=not exc.definite)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return store.finish_issue_publish(session_id, draft.draft_id, url, number)
+
+
+@app.post("/api/chat/sessions/{session_id}/memory-proposal", response_model=ChatSession)
+def propose_chat_memory(session_id: str) -> ChatSession:
+    """按需提炼一条待确认经验，不直接写长期记忆。"""
+    try:
+        return get_chat_runner().service.create_memory_proposal(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("记忆提炼失败 error_type={}", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="记忆提炼失败；对话没有丢失") from exc
+
+
+@app.post("/api/chat/sessions/{session_id}/memory", response_model=MemoryRecord)
+def confirm_chat_memory(session_id: str, request: ConfirmMemoryRequest) -> MemoryRecord:
+    if not request.confirmed:
+        raise HTTPException(status_code=422, detail="请先确认这条经验确实值得长期保存")
+    store = get_chat_store()
+    if request.kind == "experience" and request.scope != "repository":
+        raise HTTPException(status_code=422, detail="处理经验必须绑定当前仓库")
+    try:
+        original, repository_id = store.take_memory_proposal(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    proposal = MemoryProposal(kind=request.kind, scope=request.scope, text=request.text.strip(),
+                              source_excerpt=original.source_excerpt)
+    try:
+        return get_memory_store().add(proposal, repository_id, session_id)
+    except Exception:
+        store.restore_memory_proposal(session_id, original)
+        raise
+
+
+@app.get("/api/chat/memories", response_model=list[MemoryRecord])
+def list_chat_memories(repository_id: str | None = None) -> list[MemoryRecord]:
+    return get_memory_store().list(repository_id)
+
+
+@app.delete("/api/chat/memories/{memory_id}")
+def delete_chat_memory(memory_id: str) -> dict:
+    if not get_memory_store().delete(memory_id):
+        raise HTTPException(status_code=404, detail="记忆不存在")
+    return {"deleted": True}
 
 
 # ==================== 前端静态资源挂载 ====================

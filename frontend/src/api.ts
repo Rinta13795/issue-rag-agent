@@ -1,4 +1,4 @@
-import type { ChatRepository, ChatSession, ChatSessionSummary, SyncRepositoryStatus, EvaluationSummary, ExampleItem, RunSnapshot, SystemInfo } from './types'
+import type { ChatRepository, ChatSession, ChatSessionSummary, MemoryRecord, SourceIssue, SyncRepositoryStatus, EvaluationSummary, ExampleItem, RunSnapshot, SystemInfo } from './types'
 
 const API_BASE = ''
 
@@ -37,10 +37,16 @@ export async function listChatSessions(): Promise<ChatSessionSummary[]> {
   return chatJson(await fetch(`${API_BASE}/api/chat/sessions`))
 }
 
-export async function createChatSession(repositoryId: string): Promise<ChatSession> {
+export async function previewChatIssue(issueUrl: string): Promise<SourceIssue> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/issues/preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ issue_url: issueUrl }),
+  }))
+}
+
+export async function createChatSession(repositoryId: string, issueUrl?: string): Promise<ChatSession> {
   return chatJson(await fetch(`${API_BASE}/api/chat/sessions`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repository_id: repositoryId }),
+    body: JSON.stringify({ repository_id: repositoryId, issue_url: issueUrl || null }),
   }))
 }
 
@@ -58,6 +64,43 @@ export async function sendChatMessage(sessionId: string, content: string, client
 
 export async function retryChatMessage(sessionId: string): Promise<void> {
   await chatJson(await fetch(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}/retry`, { method: 'POST' }))
+}
+
+export async function createIssueDraft(sessionId: string): Promise<ChatSession> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}/issue-draft`, { method: 'POST' }))
+}
+
+export async function editIssueDraft(sessionId: string, title: string, body: string, version: number): Promise<ChatSession> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}/issue-draft`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, body, version }),
+  }))
+}
+
+export async function publishIssueDraft(sessionId: string, draftId: string, version: number): Promise<ChatSession> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}/issue-draft/publish`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draft_id: draftId, version, confirmed: true }),
+  }))
+}
+
+export async function proposeMemory(sessionId: string): Promise<ChatSession> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}/memory-proposal`, { method: 'POST' }))
+}
+
+export async function confirmMemory(sessionId: string, text: string, kind: 'preference' | 'experience', scope: 'global' | 'repository'): Promise<MemoryRecord> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}/memory`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, kind, scope, confirmed: true }),
+  }))
+}
+
+export async function listMemories(repositoryId?: string): Promise<MemoryRecord[]> {
+  const query = repositoryId ? `?repository_id=${encodeURIComponent(repositoryId)}` : ''
+  return chatJson(await fetch(`${API_BASE}/api/chat/memories${query}`))
+}
+
+export async function deleteMemory(memoryId: string): Promise<void> {
+  await chatJson(await fetch(`${API_BASE}/api/chat/memories/${encodeURIComponent(memoryId)}`, { method: 'DELETE' }))
 }
 
 export async function createRun(issueText: string, sampleId?: string): Promise<{ run_id: string; status: string; created_at: string }> {
