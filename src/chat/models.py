@@ -74,6 +74,19 @@ class ChatRepository(BaseModel):
     label: str
     issue_count: int
     source: str
+    github_url: str | None = None
+
+
+class SyncRepositoryRequest(BaseModel):
+    repository: str = Field(min_length=3, max_length=100)
+
+
+class SyncRepositoryStatus(BaseModel):
+    job_id: str
+    repository: str
+    status: Literal["queued", "fetching", "indexing", "completed", "failed"]
+    message: str
+    repository_id: str | None = None
 
 
 class SendChatMessageRequest(BaseModel):

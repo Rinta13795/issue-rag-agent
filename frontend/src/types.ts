@@ -165,4 +165,13 @@ export interface ChatRepository {
   label: string
   issue_count: number
   source: string
+  github_url: string | null
+}
+
+export interface SyncRepositoryStatus {
+  job_id: string
+  repository: string
+  status: 'queued' | 'fetching' | 'indexing' | 'completed' | 'failed'
+  message: string
+  repository_id: string | null
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChatApiError, createChatSession, getChatSession, listChatRepositories, listChatSessions, sendChatMessage } from '../api'
+import { ChatApiError, createChatSession, getChatSession, getRepositorySync, listChatRepositories, listChatSessions, sendChatMessage, syncChatRepository } from '../api'
 import type { ChatRepository, ChatSession, ChatSessionSummary } from '../types'
 
 const STORAGE_KEY = 'issue-rag-local-chat-session'
@@ -8,11 +8,6 @@ const statusLabels: Record<string, string> = {
   thinking: '正在理解这轮对话',
   retrieving: '正在查找历史 Issue',
   answering: '正在整理证据与回答',
-}
-
-function issueUrl(id: string): string | null {
-  const match = /^openharness:(\d+)$/.exec(id)
-  return match ? `https://github.com/HKUDS/OpenHarness/issues/${match[1]}` : null
 }
 
 interface Props {
@@ -24,6 +19,8 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([])
   const [repositories, setRepositories] = useState<ChatRepository[]>([])
   const [selectedRepository, setSelectedRepository] = useState('')
+  const [githubRepository, setGithubRepository] = useState('')
+  const [syncStatus, setSyncStatus] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -95,24 +92,52 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
     window.localStorage.removeItem(STORAGE_KEY)
     setSession(null)
     setSelectedRepository('')
+    setGithubRepository('')
+    setSyncStatus(null)
     setDraft('')
     setError(null)
     setNotice(null)
   }
 
-  const createForRepository = async () => {
-    if (!selectedRepository) return
+  const createForRepository = async (repositoryId = selectedRepository) => {
+    if (!repositoryId) return
     const createEpoch = ++selectionEpochRef.current
     try {
-      const created = await createChatSession(selectedRepository)
+      const created = await createChatSession(repositoryId)
       if (selectionEpochRef.current !== createEpoch) return
       window.localStorage.setItem(STORAGE_KEY, created.session_id)
       setSession(created)
       setError(null)
       setNotice(null)
       await refreshSessions()
-    } catch {
-      setError('暂时无法创建会话，请确认后端已经启动。')
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '暂时无法创建会话')
+    }
+  }
+
+  const syncAndCreate = async () => {
+    if (!githubRepository.trim()) return
+    const syncEpoch = ++selectionEpochRef.current
+    setError(null)
+    setSyncStatus('正在提交仓库…')
+    try {
+      let job = await syncChatRepository(githubRepository.trim())
+      while (selectionEpochRef.current === syncEpoch && job.status !== 'completed' && job.status !== 'failed') {
+        setSyncStatus(job.message)
+        await new Promise((resolve) => window.setTimeout(resolve, 1200))
+        if (selectionEpochRef.current !== syncEpoch) return
+        job = await getRepositorySync(job.job_id)
+      }
+      if (selectionEpochRef.current !== syncEpoch) return
+      if (job.status === 'failed' || !job.repository_id) throw new Error(job.message)
+      setRepositories(await listChatRepositories())
+      if (selectionEpochRef.current !== syncEpoch) return
+      setSyncStatus(null)
+      await createForRepository(job.repository_id)
+    } catch (caught) {
+      if (selectionEpochRef.current !== syncEpoch) return
+      setSyncStatus(null)
+      setError(caught instanceof Error ? caught.message : '仓库同步失败')
     }
   }
 
@@ -155,6 +180,10 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
 
   const busy = isSending || Boolean(session && activeStates.has(session.status))
   const activeRepository = repositories.find((repo) => repo.id === session?.repository_id)
+  const issueUrl = (id: string): string | null => {
+    const issueNumber = id.startsWith(`${session?.repository_id}:`) ? id.slice((session?.repository_id || '').length + 1) : ''
+    return activeRepository?.github_url && /^\d+$/.test(issueNumber) ? `${activeRepository.github_url}/issues/${issueNumber}` : null
+  }
   const canSendDraft = Boolean(draft.trim() && draft.trim() !== '报错原文：')
   const hasConversation = Boolean(session?.messages.length) || busy
   const canSearchHistory = Boolean(session?.messages.some((message) =>
@@ -183,7 +212,7 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
       {sessions.map((item) => <button type="button" key={item.session_id}
         className={`chat-session-item ${session?.session_id === item.session_id ? 'chat-session-item--active' : ''}`}
         onClick={() => void openSession(item.session_id)}>
-        <span>{item.title}</span><small>{item.repository_id || '旧会话 · 未绑定仓库'}</small>
+        <span>{item.title}</span><small>{repositories.find((repo) => repo.id === item.repository_id)?.label || item.repository_id || '旧会话 · 未绑定仓库'}</small>
       </button>)}
       {!sessions.length && <p className="chat-side-note">还没有对话。</p>}
     </aside>
@@ -191,15 +220,24 @@ export function ChatWorkspace({ onOpenTriage }: Props) {
     {!hasConversation && <section className="chat-home" aria-label="开始对话">
       <div className="masthead-pre">ISSUE TRIAGE / CONVERSATION</div>
       <h1 className="masthead-title">你遇到了什么问题<span className="dot">？</span></h1>
-      <p className="masthead-sub">先选一个仓库，再描述报错或故障现象。这个对话只会检索该仓库已同步的 Issue，不读取你的终端或实时 GitHub。</p>
+      <p className="masthead-sub">先选一个仓库，再描述报错或故障现象。每次对话只查一个仓库的本地 Issue 快照；换问题或换仓库，可以新开对话。</p>
       {!session && <div className="chat-repository-picker">
-        <label className="field-label" htmlFor="chat-repository">这次要查哪个仓库？</label>
-        <select id="chat-repository" value={selectedRepository} onChange={(event) => setSelectedRepository(event.target.value)}>
-          <option value="">请选择已索引的仓库</option>
-          {repositories.map((repo) => <option key={repo.id} value={repo.id}>{repo.label} · {repo.issue_count.toLocaleString()} 条 Issue</option>)}
-        </select>
-        {selectedRepository && <p className="chat-side-note">{repositories.find((repo) => repo.id === selectedRepository)?.source}；仓库选定后，本对话中不可切换。</p>}
-        <button type="button" className="btn btn--primary" disabled={!selectedRepository} onClick={() => void createForRepository()}>开始对话</button>
+        <div className="chat-repository-add">
+          <label className="field-label" htmlFor="chat-github-repository">这次要查哪个 GitHub 仓库？</label>
+          <input id="chat-github-repository" className="field-input" value={githubRepository} onChange={(event) => setGithubRepository(event.target.value)} placeholder="owner/repo，例如 HKUDS/OpenHarness" />
+          <p className="chat-side-note">首次会同步最近更新的最多 300 条公开 Issue，建立本地快照；已同步仓库会直接复用。不会实时读取 PR、代码或文档。</p>
+          <button type="button" className="btn" disabled={!githubRepository.trim() || Boolean(syncStatus)} onClick={() => void syncAndCreate()}>同步并开始对话</button>
+          {syncStatus && <p className="chat-connection" role="status">{syncStatus}。首次索引可能需要几分钟。</p>}
+        </div>
+        <div className="chat-repository-existing">
+          <label className="field-label" htmlFor="chat-repository">或使用已有快照</label>
+          <select id="chat-repository" value={selectedRepository} onChange={(event) => setSelectedRepository(event.target.value)}>
+            <option value="">请选择已有快照</option>
+            {repositories.map((repo) => <option key={repo.id} value={repo.id}>{repo.label} · {repo.issue_count.toLocaleString()} 条 Issue</option>)}
+          </select>
+          {selectedRepository && <p className="chat-side-note">{repositories.find((repo) => repo.id === selectedRepository)?.source}；仓库选定后，本对话中不可切换。</p>}
+          <button type="button" className="btn btn--primary" disabled={!selectedRepository || Boolean(syncStatus)} onClick={() => void createForRepository()}>开始对话</button>
+        </div>
       </div>}
       {notice && <p className="chat-connection" role="status">{notice}</p>}
       {error && <div className="chat-connection-error" role="alert"><p className="chat-error">■ {error}</p><button type="button" className="btn btn--sm" onClick={startNew}>重新选择</button></div>}

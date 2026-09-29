@@ -67,3 +67,24 @@ def test_new_session_requires_an_indexed_repository():
         client = TestClient(app)
         assert client.post("/api/chat/sessions", json={"repository_id": "unknown"}).status_code == 422
         assert client.post("/api/chat/sessions", json={}).status_code == 422
+
+
+def test_github_sync_api_validation_and_status():
+    class FakeManager:
+        def start(self, value):
+            if value == "invalid":
+                raise ValueError("仓库格式错误")
+            from src.chat.models import SyncRepositoryStatus
+            return SyncRepositoryStatus(job_id="sync_1", repository=value, status="fetching", message="正在读取公开 Issue")
+
+        def get(self, job_id):
+            return self.start("owner/repo") if job_id == "sync_1" else None
+
+    with patch("api.get_sync_manager", return_value=FakeManager()):
+        client = TestClient(app)
+        assert client.post("/api/chat/repositories/sync", json={"repository": "invalid"}).status_code == 422
+        response = client.post("/api/chat/repositories/sync", json={"repository": "owner/repo"})
+        assert response.status_code == 202
+        assert response.json()["status"] == "fetching"
+        assert client.get("/api/chat/repositories/sync/sync_1").status_code == 200
+        assert client.get("/api/chat/repositories/sync/missing").status_code == 404
