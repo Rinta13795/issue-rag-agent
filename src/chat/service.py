@@ -124,11 +124,17 @@ class ChatService:
         body = answer.get("answer") if isinstance(answer.get("answer"), str) else ""
         question = answer.get("open_question") if isinstance(answer.get("open_question"), str) else None
         if not body.strip() or not citations:
-            body = "我查了本地历史 Issue，但现有候选还不足以确认是同一故障或已有可靠解法。你可以查看候选原文，或补充报错原文与仓库名称。"
+            if "反馈" in current.content or "类似问题" in current.content:
+                body = "我按你描述的行为查了当前仓库的本地 Issue 快照，但这批候选没有足够证据证明已有同类反馈。这不代表仓库全部历史 Issue 都没有；你可以查看候选原文，或补充具体触发步骤再查。"
+                question = None
+            else:
+                body = "我查了本地历史 Issue，但现有候选还不足以确认是同一故障或已有可靠解法。你可以查看候选原文，或补充报错原文。"
+                question = "能提供报错原文或触发步骤吗？"
             citations = []
             if action == "retrieve":
-                action = "clarify"
-                question = "能提供报错原文或仓库名称吗？"
+                action = "clarify" if question else "reply"
+                if action == "clarify":
+                    question = "能提供报错原文或触发步骤吗？"
         self._finish(session_id, body[:1600], action, citations, question[:240] if question else None)
 
     def process_turn(self, session_id: str, message_id: str) -> None:

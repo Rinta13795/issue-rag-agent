@@ -7,6 +7,7 @@ from src.chat.context import (
     merge_facts,
     parse_json_object,
     planner_payload,
+    fallback_search_query,
     search_query,
     select_message_excerpt,
     validate_plan,
@@ -73,3 +74,14 @@ def test_invalid_json_and_empty_facts_are_safe():
 
 def test_excerpt_for_short_message_is_verbatim():
     assert select_message_excerpt("NullPointerException") == "NullPointerException"
+
+
+def test_explicit_behavior_feedback_can_search_without_error_code():
+    text = "有没有人反馈定时任务每次都给我做一个 App，我只想让 Agent 执行？"
+    session, message_id = new_turn(text)
+    assert fallback_search_query(session, message_id) == text
+
+
+def test_short_vague_feedback_still_needs_clarification():
+    session, message_id = new_turn("有人反馈吗？")
+    assert fallback_search_query(session, message_id) == ""
