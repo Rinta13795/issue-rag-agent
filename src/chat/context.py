@@ -58,11 +58,27 @@ def is_ambiguous_reference(text: str, session: ChatSession) -> bool:
     }
 
 
+def source_issue_payload(session: ChatSession, body_chars: int = 1800) -> dict | None:
+    """源 Issue 在数据库保留原文；给 LLM 只送有限首尾和评论摘录。"""
+    issue = session.source_issue
+    if issue is None:
+        return None
+    return {
+        "repository": issue.repository, "number": issue.number, "title": issue.title,
+        "body_excerpt": select_message_excerpt(issue.body, body_chars),
+        "state": issue.state, "url": issue.url,
+        "comments": [{"author": item.author, "body_excerpt": select_message_excerpt(item.body, 300), "url": item.url}
+                     for item in issue.comments[-3:]],
+        "comments_truncated": issue.comments_truncated or len(issue.comments) > 3,
+    }
+
+
 def planner_payload(session: ChatSession, current_message_id: str) -> str:
     current = next(message for message in session.messages if message.id == current_message_id)
     previous = [m for m in session.messages if m.id != current_message_id][-CHAT_RECENT_MESSAGES:]
     payload = {
         "selected_repository": session.repository_id,
+        "source_issue": source_issue_payload(session),
         "current_message": select_message_excerpt(current.content),
         "known_user_facts": [fact.value for fact in session.facts[-CHAT_MAX_FACTS:]],
         "recent_dialogue": [{"role": m.role, "text": m.content[:500]} for m in previous],
@@ -74,7 +90,7 @@ def planner_payload(session: ChatSession, current_message_id: str) -> str:
 
 def validate_plan(raw: dict, session: ChatSession, current_message_id: str) -> ContextPlan:
     current = next(message for message in session.messages if message.id == current_message_id)
-    action = raw.get("action") if raw.get("action") in ("reply", "clarify", "retrieve") else "clarify"
+    action = raw.get("action") if raw.get("action") in ("reply", "clarify", "retrieve", "draft_issue", "propose_memory") else "clarify"
     facts: list[ChatFact] = []
     for item in raw.get("facts", []) if isinstance(raw.get("facts"), list) else []:
         if not isinstance(item, dict):
@@ -115,6 +131,19 @@ def search_query(facts: list[ChatFact]) -> str:
     return " ".join(fact.value for fact in facts)[:CHAT_QUERY_CHARS].strip()
 
 
+def source_issue_query(session: ChatSession) -> str:
+    """已导入 Issue 时，用其真实标题和正文作为首轮检索输入。"""
+    if not session.source_issue:
+        return ""
+    source = session.source_issue
+    return f"{source.title} {source.body[:500]}"[:CHAT_QUERY_CHARS].strip()
+
+
+def is_issue_or_pr_advice(text: str) -> bool:
+    """过程咨询直接回答；不能误当成需要用户提供错误码的故障。"""
+    return bool(re.search(r"(?i)(issue|问题单|反馈)", text) and re.search(r"(?i)\bpr\b|pull request|要不要提|需要提|该不该提", text))
+
+
 _FAULT_SIGNAL = re.compile(r"error|exception|traceback|fail|crash|报错|失败|崩溃|卡住|无法|不能|不了", re.I)
 _SEARCH_REQUEST = re.compile(r"查|搜|有没有.*解决|有人解决|先找|有没有人反馈|有人遇到|类似问题|反馈过", re.I)
 
@@ -149,4 +178,6 @@ def candidate_from_doc(doc: dict) -> ChatCandidate:
         title=str(doc.get("title", ""))[:240],
         body_snippet=str(doc.get("body", ""))[:CHAT_EVIDENCE_CHARS],
         rerank_score=float(doc["rerank_score"]) if doc.get("rerank_score") is not None else None,
+        source="github" if doc.get("source") == "github" else "local",
+        url=str(doc["url"]) if doc.get("url") else None,
     )

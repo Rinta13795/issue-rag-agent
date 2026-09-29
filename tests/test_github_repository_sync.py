@@ -68,3 +68,62 @@ def test_manager_reuses_complete_snapshot(monkeypatch, tmp_path):
     job = manager.start("owner/repo")
     assert job.status == "completed"
     assert job.repository_id == project
+
+
+def test_issue_url_import_reads_source_and_bounded_comments(monkeypatch):
+    assert github_sync.parse_issue_url("https://github.com/Owner/Repo/issues/12#top") == ("Owner/Repo", 12)
+    calls = []
+
+    def fake_request(url):
+        calls.append(url)
+        if "/comments?" in url:
+            return [{"user": {"login": "maintainer"}, "body": "Fixed in next release", "html_url": "https://github.com/Owner/Repo/issues/12#issuecomment-1"}]
+        return {"number": 12, "title": "Crash on start", "body": "Steps to reproduce", "state": "open", "comments": 1,
+                "html_url": "https://github.com/Owner/Repo/issues/12"}
+
+    monkeypatch.setattr(github_sync, "_request_json", fake_request)
+    issue = github_sync.fetch_issue("https://github.com/Owner/Repo/issues/12")
+    assert issue.title == "Crash on start"
+    assert issue.comments[0].author == "maintainer"
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("value", [
+    "http://github.com/a/b/issues/1", "https://evil.example/a/b/issues/1",
+    "https://github.com/a/b/pull/1", "https://github.com/a/b/issues/0",
+])
+def test_issue_url_rejects_non_issue(value):
+    with pytest.raises(ValueError):
+        github_sync.parse_issue_url(value)
+
+
+def test_issue_import_rejects_pull_request(monkeypatch):
+    monkeypatch.setattr(github_sync, "_request_json", lambda url: {"number": 12, "pull_request": {}})
+    with pytest.raises(ValueError, match="Pull Request"):
+        github_sync.fetch_issue("https://github.com/Owner/Repo/issues/12")
+
+
+def test_live_search_is_repository_scoped_and_excludes_pr(monkeypatch):
+    calls = []
+
+    def fake_request(url):
+        calls.append(url)
+        return {"items": [
+            {"number": 12, "title": "Crash", "body": "Fails on start", "html_url": "https://github.com/Owner/Repo/issues/12"},
+            {"number": 13, "title": "Fix", "pull_request": {}, "html_url": "https://github.com/Owner/Repo/pull/13"},
+        ]}
+
+    monkeypatch.setattr(github_sync, "_request_json", fake_request)
+    results = github_sync.search_live_issues("Owner/Repo", "app crash")
+    assert len(results) == 1
+    assert results[0]["source"] == "github"
+    assert results[0]["id"] == f"{github_sync.repository_id('Owner/Repo')}:12"
+    from urllib.parse import parse_qs, urlsplit
+    assert "repo:Owner/Repo is:issue app crash" == parse_qs(urlsplit(calls[0]).query)["q"][0]
+
+
+def test_publish_without_server_token_is_known_failure(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    with pytest.raises(github_sync.GitHubPublishError) as exc:
+        github_sync.create_github_issue("Owner/Repo", "Title", "Body")
+    assert exc.value.definite is True

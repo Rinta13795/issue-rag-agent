@@ -187,6 +187,56 @@ def test_repeated_clarification_explains_capability_boundary_once():
     assert second.retrieval_calls == 0
 
 
+def test_issue_or_pr_advice_answers_without_retrieval_or_log_request():
+    store = ChatStore()
+    session = store.create("vscode")
+    service = ChatService(store, FakeLLM([]), FakeLLM([]), lambda repository_id: (FakeRetriever(), FakeReranker()))
+    result = send(service, store, session.session_id, "体验上有问题，需要提 Issue 还是 PR？", "one")
+    assert result.retrieval_calls == 0
+    assert "先提 Issue" in result.messages[-1].content
+    assert "日志" not in result.messages[-1].content
+
+
+def test_imported_issue_is_search_context_for_followup():
+    from src.chat.models import SourceIssue
+
+    store = ChatStore()
+    source = SourceIssue(repository="Owner/Repo", number=12, title="Login crash", body="Click login and it crashes",
+                         state="open", url="https://github.com/Owner/Repo/issues/12")
+    session = store.create("vscode", source_issue=source)
+    planner = FakeLLM([{"action": "retrieve", "facts": []}])
+    answer = FakeLLM([{"answer": "有一条相关线索。", "citations": ["vscode:101"]}])
+    retriever = FakeRetriever()
+    service = ChatService(store, planner, answer, lambda repository_id: (retriever, FakeReranker()))
+    result = send(service, store, session.session_id, "这条 Issue 和以前哪些问题像？", "one")
+    assert result.retrieval_calls == 1
+    assert retriever.queries == ["Login crash Click login and it crashes"]
+
+
+def test_draft_and_memory_proposals_do_not_publish_or_save_automatically(monkeypatch):
+    from src.chat.models import SourceIssue
+    from src.chat.memory import MemoryStore
+
+    store = ChatStore()
+    memory = MemoryStore()
+    source = SourceIssue(repository="Owner/Repo", number=12, title="Crash", body="Crashes after clicking start",
+                         state="open", url="https://github.com/Owner/Repo/issues/12")
+    session = store.create("gh-repo", source_issue=source)
+    store.add_user_message(session.session_id, "我确认点击开始后会崩溃", "one")
+    store.update(session.session_id, lambda item: setattr(item, "status", "completed"))
+    answer = FakeLLM([
+        {"title": "App crashes on start", "body": "实际行为：点击开始后崩溃。\n复现步骤：待补充。"},
+        {"kind": "experience", "scope": "repository", "text": "点击开始后崩溃，等待进一步定位", "source_excerpt": "我确认点击开始后会崩溃"},
+    ])
+    monkeypatch.setattr("src.chat.service.list_repositories", lambda: [])
+    service = ChatService(store, FakeLLM([]), answer, memory_store=memory)
+    drafted = service.create_draft(session.session_id)
+    assert drafted.issue_draft.status == "draft"
+    proposed = service.create_memory_proposal(session.session_id)
+    assert proposed.memory_proposal.kind == "experience"
+    assert memory.list() == []
+
+
 def test_missing_candidate_does_not_invent_duplicate():
     store = ChatStore()
     session = store.create("vscode")

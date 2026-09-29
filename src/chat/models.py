@@ -26,6 +26,51 @@ class ChatCandidate(BaseModel):
     title: str = ""
     body_snippet: str = ""
     rerank_score: float | None = None
+    source: Literal["local", "github"] = "local"
+    url: str | None = None
+
+
+class SourceIssueComment(BaseModel):
+    author: str
+    body: str
+    url: str
+
+
+class SourceIssue(BaseModel):
+    repository: str
+    number: int
+    title: str
+    body: str
+    state: str
+    url: str
+    comments: list[SourceIssueComment] = Field(default_factory=list)
+    comments_truncated: bool = False
+
+
+class IssueDraft(BaseModel):
+    draft_id: str
+    title: str
+    body: str
+    version: int = 1
+    status: Literal["draft", "publishing", "published", "uncertain"] = "draft"
+    published_url: str | None = None
+    published_number: int | None = None
+    possible_duplicates: list[ChatCandidate] = Field(default_factory=list)
+    search_status: Literal["not_run", "ok", "failed"] = "not_run"
+
+
+class MemoryProposal(BaseModel):
+    kind: Literal["preference", "experience"]
+    text: str
+    scope: Literal["global", "repository"]
+    source_excerpt: str
+
+
+class MemoryRecord(MemoryProposal):
+    memory_id: str
+    repository_id: str | None
+    source_session_id: str
+    created_at: str = Field(default_factory=utc_now)
 
 
 class ChatMessage(BaseModel):
@@ -40,6 +85,9 @@ class ChatMessage(BaseModel):
 class ChatSession(BaseModel):
     session_id: str
     repository_id: str | None = None  # 旧会话没有仓库归属，不允许继续跨库检索
+    source_issue: SourceIssue | None = None
+    issue_draft: IssueDraft | None = None
+    memory_proposal: MemoryProposal | None = None
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
     status: ChatStatus = "idle"
@@ -49,6 +97,8 @@ class ChatSession(BaseModel):
     focus_candidate_id: str | None = None
     candidates: list[ChatCandidate] = Field(default_factory=list)
     last_search_fingerprint: str | None = None
+    live_search_status: Literal["not_run", "ok", "failed"] = "not_run"
+    live_search_message: str | None = None
     model_calls: int = 0
     retrieval_calls: int = 0
     prompt_tokens: int | None = None
@@ -59,6 +109,30 @@ class ChatSession(BaseModel):
 
 class CreateChatSessionRequest(BaseModel):
     repository_id: str = Field(min_length=1, max_length=80)
+    issue_url: str | None = Field(default=None, max_length=300)
+
+
+class PreviewIssueRequest(BaseModel):
+    issue_url: str = Field(min_length=1, max_length=300)
+
+
+class UpdateIssueDraftRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=256)
+    body: str = Field(min_length=1, max_length=20000)
+    version: int = Field(ge=1)
+
+
+class PublishIssueDraftRequest(BaseModel):
+    draft_id: str = Field(min_length=1, max_length=80)
+    version: int = Field(ge=1)
+    confirmed: bool
+
+
+class ConfirmMemoryRequest(BaseModel):
+    kind: Literal["preference", "experience"]
+    text: str = Field(min_length=1, max_length=500)
+    scope: Literal["global", "repository"]
+    confirmed: bool
 
 
 class ChatSessionSummary(BaseModel):

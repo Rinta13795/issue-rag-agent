@@ -15,13 +15,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from urllib.error import URLError
+from urllib.parse import urlencode, urlsplit
 
 import certifi
 from langchain_chroma import Chroma
 from rank_bm25 import BM25Okapi
 
 from config import INDEX_BATCH_SIZE
-from src.chat.models import SyncRepositoryStatus
+from src.chat.models import SourceIssue, SourceIssueComment, SyncRepositoryStatus
 from src.docstore import build_docstore
 from src.indexer import chunk_issue, load_embeddings, tokenize
 
@@ -29,6 +31,99 @@ GITHUB_INDEX_ROOT = Path(__file__).resolve().parents[2] / ".local" / "github_rep
 MAX_ISSUES = 300
 MAX_PAGES = 20
 _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9_.-]{1,100}$")
+
+
+def parse_issue_url(value: str) -> tuple[str, int]:
+    """只解析 github.com 的公开 Issue URL，拒绝 PR 和其他站点。"""
+    parsed = urlsplit(value.strip())
+    parts = parsed.path.strip("/").split("/")
+    if parsed.scheme != "https" or parsed.netloc.lower() != "github.com" or len(parts) != 4 or parts[2] != "issues" or not parts[3].isdigit():
+        raise ValueError("请输入 GitHub Issue 链接，例如 https://github.com/owner/repo/issues/123")
+    repository = normalize_repository("/".join(parts[:2]))
+    number = int(parts[3])
+    if number < 1:
+        raise ValueError("Issue 编号必须大于 0")
+    return repository, number
+
+
+def fetch_issue(value: str) -> SourceIssue:
+    """按 URL 实时拉取一条 Issue 及有限评论，不依赖本地快照。"""
+    repository, number = parse_issue_url(value)
+    item = _request_json(f"https://api.github.com/repos/{repository}/issues/{number}")
+    if "pull_request" in item:
+        raise ValueError("这是 Pull Request 链接，请提供 Issue 链接")
+    if not isinstance(item, dict) or item.get("number") != number:
+        raise ValueError("GitHub 返回的 Issue 编号与链接不一致")
+    count = int(item.get("comments") or 0)
+    comments: list[SourceIssueComment] = []
+    if count:
+        records = _request_json(f"https://api.github.com/repos/{repository}/issues/{number}/comments?per_page=10")
+        if isinstance(records, list):
+            comments = [SourceIssueComment(
+                author=str(record.get("user", {}).get("login") or "unknown"),
+                body=str(record.get("body") or "")[:1200],
+                url=str(record.get("html_url") or ""),
+            ) for record in records[:10]]
+    return SourceIssue(
+        repository=repository, number=number, title=str(item.get("title") or "")[:500],
+        body=str(item.get("body") or "")[:12000], state=str(item.get("state") or "unknown"),
+        url=str(item.get("html_url") or f"https://github.com/{repository}/issues/{number}"),
+        comments=comments, comments_truncated=count > len(comments),
+    )
+
+
+def search_live_issues(full_name: str, query: str, limit: int = 10) -> list[dict]:
+    """在 GitHub 当前公开 Issue 中搜索；结果不等于全仓库无遗漏证明。"""
+    repository = normalize_repository(full_name)
+    compact = " ".join(query.split())[:180]
+    if not compact:
+        return []
+    params = urlencode({"q": f"repo:{repository} is:issue {compact}", "per_page": min(limit, 20)})
+    data = _request_json(f"https://api.github.com/search/issues?{params}")
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        raise ValueError("GitHub 实时搜索返回了无法解析的数据")
+    project = repository_id(repository)
+    return [{
+        "id": f"{project}:{item['number']}",
+        "title": str(item.get("title") or ""),
+        "body": str(item.get("body") or "")[:2000],
+        "url": str(item.get("html_url") or ""),
+        "source": "github",
+    } for item in data["items"] if isinstance(item, dict) and isinstance(item.get("number"), int) and "pull_request" not in item]
+
+
+class GitHubPublishError(Exception):
+    """definite=True 表示已知未发布；否则结果未知，不得自动重试。"""
+
+    def __init__(self, message: str, definite: bool):
+        super().__init__(message)
+        self.definite = definite
+
+
+def create_github_issue(full_name: str, title: str, body: str) -> tuple[str, int]:
+    """仅在用户确认后调用；凭据只由服务端环境读取。"""
+    repository = normalize_repository(full_name)
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        raise GitHubPublishError("服务端未配置 GitHub 写入凭据；草稿仍可复制使用", definite=True)
+    url = f"https://api.github.com/repos/{repository}/issues"
+    payload = json.dumps({"title": title, "body": body}, ensure_ascii=False).encode("utf-8")
+    request = Request(url, data=payload, method="POST", headers={
+        "Accept": "application/vnd.github+json", "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}", "User-Agent": "issue-rag-agent",
+    })
+    try:
+        with urlopen(request, timeout=30, context=ssl.create_default_context(cafile=certifi.where())) as response:
+            result = json.load(response)
+    except HTTPError as exc:
+        if exc.code in (401, 403, 404, 422):
+            raise GitHubPublishError(f"GitHub 拒绝创建 Issue（HTTP {exc.code}）；请检查权限、仓库设置或草稿内容", definite=True) from exc
+        raise GitHubPublishError(f"GitHub 返回 HTTP {exc.code}；发布结果不确定，请先查看仓库", definite=False) from exc
+    except (URLError, TimeoutError) as exc:
+        raise GitHubPublishError("网络中断，发布结果不确定；请先查看仓库，勿重复点击", definite=False) from exc
+    if not isinstance(result, dict) or not isinstance(result.get("html_url"), str) or not isinstance(result.get("number"), int):
+        raise GitHubPublishError("GitHub 返回了无法核对的发布结果；请先查看仓库", definite=False)
+    return result["html_url"], result["number"]
 
 
 def normalize_repository(value: str) -> str:

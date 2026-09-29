@@ -121,6 +121,45 @@ export interface ChatCandidate {
   title: string
   body_snippet: string
   rerank_score: number | null
+  source: 'local' | 'github'
+  url: string | null
+}
+
+export interface SourceIssue {
+  repository: string
+  number: number
+  title: string
+  body: string
+  state: string
+  url: string
+  comments: { author: string; body: string; url: string }[]
+  comments_truncated: boolean
+}
+
+export interface IssueDraft {
+  draft_id: string
+  title: string
+  body: string
+  version: number
+  status: 'draft' | 'publishing' | 'published' | 'uncertain'
+  published_url: string | null
+  published_number: number | null
+  possible_duplicates: ChatCandidate[]
+  search_status: 'not_run' | 'ok' | 'failed'
+}
+
+export interface MemoryProposal {
+  kind: 'preference' | 'experience'
+  text: string
+  scope: 'global' | 'repository'
+  source_excerpt: string
+}
+
+export interface MemoryRecord extends MemoryProposal {
+  memory_id: string
+  repository_id: string | null
+  source_session_id: string
+  created_at: string
 }
 
 export interface ChatMessage {
@@ -135,6 +174,9 @@ export interface ChatMessage {
 export interface ChatSession {
   session_id: string
   repository_id: string | null
+  source_issue: SourceIssue | null
+  issue_draft: IssueDraft | null
+  memory_proposal: MemoryProposal | null
   created_at: string
   updated_at: string
   status: ChatStatus
@@ -144,6 +186,8 @@ export interface ChatSession {
   focus_candidate_id: string | null
   candidates: ChatCandidate[]
   last_search_fingerprint: string | null
+  live_search_status: 'not_run' | 'ok' | 'failed'
+  live_search_message: string | null
   model_calls: number
   retrieval_calls: number
   prompt_tokens: number | null

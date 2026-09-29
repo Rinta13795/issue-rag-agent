@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 
 from api import app
 from src.chat.store import ChatStore
+from src.chat.models import ChatRepository, MemoryProposal, SourceIssue
+from src.chat.memory import MemoryStore
 
 
 class FakeRunner:
@@ -105,3 +107,89 @@ def test_retry_endpoint_resubmits_same_message_without_duplicate():
         assert len(store.get(session_id).messages) == 1
         assert client.post(f"/api/chat/sessions/{session_id}/retry").status_code == 409
         assert client.post("/api/chat/sessions/missing/retry").status_code == 404
+
+
+def test_import_issue_binds_authoritative_repository():
+    source = SourceIssue(repository="Owner/Repo", number=12, title="Crash", body="Steps", state="open",
+                         url="https://github.com/Owner/Repo/issues/12")
+    store = ChatStore()
+    from src.chat.github_sync import repository_id
+    with patch("api.get_chat_store", return_value=store), patch("api.repository_exists", return_value=True), patch("api.fetch_issue", return_value=source):
+        client = TestClient(app)
+        preview = client.post("/api/chat/issues/preview", json={"issue_url": source.url})
+        assert preview.status_code == 200
+        response = client.post("/api/chat/sessions", json={"repository_id": repository_id("Owner/Repo"), "issue_url": source.url})
+        assert response.status_code == 200
+        assert response.json()["source_issue"]["number"] == 12
+        assert client.get("/api/chat/sessions").json()[0]["title"] == "Crash"
+        wrong = client.post("/api/chat/sessions", json={"repository_id": "other", "issue_url": source.url})
+        assert wrong.status_code == 422
+
+
+def test_issue_draft_publish_requires_confirmation_and_is_idempotent():
+    store = ChatStore()
+    session_id = store.create("gh-repo").session_id
+    draft = store.save_issue_draft(session_id, "App fails to start", "Steps to reproduce").issue_draft
+    repo = ChatRepository(id="gh-repo", label="Owner/Repo", issue_count=10, source="GitHub", github_url="https://github.com/Owner/Repo")
+    calls = []
+
+    def fake_publish(repository, title, body):
+        calls.append((repository, title, body))
+        return "https://github.com/Owner/Repo/issues/99", 99
+
+    with patch("api.get_chat_store", return_value=store), patch("api.list_repositories", return_value=[repo]), patch("api.create_github_issue", side_effect=fake_publish):
+        client = TestClient(app)
+        url = f"/api/chat/sessions/{session_id}/issue-draft/publish"
+        payload = {"draft_id": draft.draft_id, "version": draft.version, "confirmed": False}
+        assert client.post(url, json=payload).status_code == 422
+        assert not calls
+        edit = client.patch(f"/api/chat/sessions/{session_id}/issue-draft", json={
+            "title": "Updated title", "body": "New steps", "version": draft.version,
+        })
+        assert edit.status_code == 200
+        payload.update({"version": draft.version + 1, "confirmed": True})
+        first = client.post(url, json=payload)
+        second = client.post(url, json=payload)
+        assert first.status_code == second.status_code == 200
+        assert len(calls) == 1
+        assert calls[0] == ("Owner/Repo", "Updated title", "New steps")
+        assert second.json()["issue_draft"]["published_number"] == 99
+
+
+def test_memory_requires_proposal_and_can_be_deleted():
+    store = ChatStore()
+    memory = MemoryStore()
+    session_id = store.create("repo-a").session_id
+    proposal = MemoryProposal(kind="preference", scope="global", text="先查重", source_excerpt="先查重")
+    store.update(session_id, lambda session: setattr(session, "memory_proposal", proposal))
+    with patch("api.get_chat_store", return_value=store), patch("api.get_memory_store", return_value=memory):
+        client = TestClient(app)
+        url = f"/api/chat/sessions/{session_id}/memory"
+        assert client.post(url, json={"kind": "preference", "scope": "global", "text": "先查重", "confirmed": False}).status_code == 422
+        saved = client.post(url, json={"kind": "preference", "scope": "global", "text": "先查重", "confirmed": True})
+        assert saved.status_code == 200
+        assert saved.json()["repository_id"] is None
+        assert client.post(url, json={"kind": "preference", "scope": "global", "text": "先查重", "confirmed": True}).status_code == 409
+        memory_id = saved.json()["memory_id"]
+        assert len(client.get("/api/chat/memories?repository_id=repo-a").json()) == 1
+        assert client.delete(f"/api/chat/memories/{memory_id}").status_code == 200
+        assert client.get("/api/chat/memories?repository_id=repo-a").json() == []
+
+
+def test_uncertain_publish_is_not_retried():
+    from src.chat.github_sync import GitHubPublishError
+
+    store = ChatStore()
+    session_id = store.create("gh-repo").session_id
+    draft = store.save_issue_draft(session_id, "Title", "Body").issue_draft
+    repo = ChatRepository(id="gh-repo", label="Owner/Repo", issue_count=10, source="GitHub", github_url="https://github.com/Owner/Repo")
+    with patch("api.get_chat_store", return_value=store), patch("api.list_repositories", return_value=[repo]), patch(
+        "api.create_github_issue", side_effect=GitHubPublishError("网络结果不确定", definite=False),
+    ) as publisher:
+        client = TestClient(app)
+        url = f"/api/chat/sessions/{session_id}/issue-draft/publish"
+        payload = {"draft_id": draft.draft_id, "version": 1, "confirmed": True}
+        assert client.post(url, json=payload).status_code == 502
+        assert store.get(session_id).issue_draft.status == "uncertain"
+        assert client.post(url, json=payload).status_code == 409
+        assert publisher.call_count == 1
