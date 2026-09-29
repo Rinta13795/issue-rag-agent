@@ -41,7 +41,8 @@ from src.demo.models import (
 )
 from src.demo.run_store import get_run_store
 from src.demo.runner import get_observable_runner
-from src.chat.models import ChatRepository, ChatSession, ChatSessionSummary, CreateChatSessionRequest, SendChatMessageRequest, SendChatMessageResponse
+from src.chat.models import ChatRepository, ChatSession, ChatSessionSummary, CreateChatSessionRequest, SendChatMessageRequest, SendChatMessageResponse, SyncRepositoryRequest, SyncRepositoryStatus
+from src.chat.github_sync import get_sync_manager
 from src.chat.repositories import list_repositories, repository_exists
 from src.chat.service import get_chat_runner
 from src.chat.store import get_chat_store
@@ -205,6 +206,22 @@ def get_evaluation() -> EvaluationSummary:
 @app.get("/api/chat/repositories", response_model=list[ChatRepository])
 def get_chat_repositories() -> list[ChatRepository]:
     return list_repositories()
+
+
+@app.post("/api/chat/repositories/sync", response_model=SyncRepositoryStatus, status_code=202)
+def sync_chat_repository(request: SyncRepositoryRequest) -> SyncRepositoryStatus:
+    try:
+        return get_sync_manager().start(request.repository)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/chat/repositories/sync/{job_id}", response_model=SyncRepositoryStatus)
+def get_chat_repository_sync(job_id: str) -> SyncRepositoryStatus:
+    job = get_sync_manager().get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="同步任务不存在或服务已重启")
+    return job
 
 
 @app.get("/api/chat/sessions", response_model=list[ChatSessionSummary])

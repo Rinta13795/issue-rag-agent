@@ -140,13 +140,15 @@ npm run dev
 
 进入“对话”后先选择仓库。每次新对话创建独立 `session_id`，并将 `repository_id` 固定保存在 SQLite 会话中；后续消息沿用该仓库的事实、候选和检索结果。向量检索按仓库元数据过滤，BM25 按仓库 Issue ID 过滤，RRF 前再剔除越界候选。切换仓库需创建新对话，旧对话仍可从列表打开。升级前没有仓库归属的旧会话可查看，但不能继续检索，以免混入其他仓库的 Issue。
 
-主索引来自 GitBugs 历史快照。若要查询 HKUDS/OpenHarness 的公开 Issue，可额外运行：
+主索引来自 GitBugs 历史快照。若要查询其他公开 GitHub 仓库，在新对话页输入 `owner/repo`（或仓库 URL），点击“同步并开始对话”。后台从 GitHub API 读取最近更新的最多 300 条公开 Issue，排除 PR，建立独立的 BM25、Chroma 和正文证据快照；完成后自动创建绑定该仓库的对话。首次建立快照可能需要几分钟；同仓库再次使用时直接复用。可选在服务端设置 `GITHUB_TOKEN` 提高 API 额度，不需把 Token 填入页面。
+
+这个入口不读取私有仓库，也不实时读取 PR、代码或文档。已建快照不会自动更新，时间和样本范围会在仓库选择器中展示；命中某条 Issue 不等于故障已修复。跨仓库问题应新开对话分别核验，当前不会自动跨库混合证据。旧的 OpenHarness 专用同步脚本仅保留为兼容已有本地快照的方式：
 
 ```bash
 python -m scripts.sync_openharness_issues
 ```
 
-这会将 OpenHarness 的 Issue 建成独立的本地 BM25、Chroma 和正文证据库，不覆盖 GitBugs 主索引。同步完成后重启服务，仓库选项才会出现。它是运行时的快照，不会自动跟随 GitHub 更新；再次运行同步命令可更新本地数据。公开 Issue 可能包含尚未修复的问题，命中相同报告不等于找到了可靠解决方案。
+旧脚本生成的快照仍可选，但新增仓库不再需要编写专用脚本。
 
 ## 接口与集成
 
@@ -161,6 +163,8 @@ python -m scripts.sync_openharness_issues
 | GET | `/api/system` | 查询演示元数据与索引存在状态 |
 | GET | `/api/evaluation/summary` | 读取本地评测结果 |
 | GET | `/api/chat/repositories` | 列出本地已索引仓库 |
+| POST | `/api/chat/repositories/sync` | 按需同步公开 GitHub 仓库，返回后台任务 |
+| GET | `/api/chat/repositories/sync/{job_id}` | 查询同步进度与结果 |
 | GET | `/api/chat/sessions` | 列出本地对话 |
 | POST | `/api/chat/sessions` | 选择仓库并创建对话 |
 
