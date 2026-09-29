@@ -215,12 +215,30 @@ def test_model_failure_is_visible_and_next_turn_is_allowed():
     service = ChatService(store, FailingLLM(), FakeLLM([]), lambda repository_id: (FakeRetriever(), FakeReranker()))
     failed = send(service, store, session.session_id, "登录失败", "one")
     assert failed.status == "failed"
-    assert "鉴权失败" in failed.last_error
+    assert "拒绝" in failed.last_error
     assert failed.messages[-1].role == "user"
     service.planner_llm = FakeLLM([{"action": "clarify", "reply": "请提供具体错误码。"}])
     resumed = send(service, store, session.session_id, "还有错误码吗？", "two")
     assert resumed.status == "completed"
     assert resumed.messages[-1].role == "assistant"
+
+
+def test_connection_failure_keeps_user_message_and_explains_retry():
+    class OpenAIConnectionError(Exception):
+        pass
+
+    class FailingLLM:
+        def invoke(self, messages):
+            raise OpenAIConnectionError()
+
+    store = ChatStore()
+    session = store.create("vscode")
+    service = ChatService(store, FailingLLM(), FakeLLM([]), lambda repository_id: (FakeRetriever(), FakeReranker()))
+    failed = send(service, store, session.session_id, "应用启动失败", "one")
+    assert failed.status == "failed"
+    assert "连接中断" in failed.last_error
+    assert len(failed.messages) == 1
+    assert failed.messages[0].content == "应用启动失败"
 
 
 def test_chat_drops_cross_repository_candidates_even_if_retriever_misbehaves():
