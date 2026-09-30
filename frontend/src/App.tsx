@@ -119,11 +119,11 @@ export const App: React.FC = () => {
       )}
 
       {errorMsg && (
-        <div style={{ border: '1px solid var(--accent)', borderRadius: '5px', padding: '14px 18px', marginBottom: '24px', background: 'var(--paper)', color: 'var(--ink)' }}>
-          <div style={{ fontFamily: 'var(--mono)', fontSize: '11px', color: 'var(--accent)', textTransform: 'uppercase', marginBottom: '4px' }}>
+        <div className="app-alert">
+          <div className="app-alert-title">
             ■ 运行异常提示
           </div>
-          <div style={{ fontSize: '13px' }}>{errorMsg}</div>
+          <div className="app-alert-body">{errorMsg}</div>
         </div>
       )}
 
@@ -134,7 +134,7 @@ export const App: React.FC = () => {
       <CandidateList snapshot={snapshot} />
 
       {snapshot && snapshot.status === 'completed' && (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '24px' }}>
+        <div className="app-actions">
           <button type="button" className="btn btn--sm" onClick={handleCopyJson}>
             复制分析记录（JSON）
           </button>

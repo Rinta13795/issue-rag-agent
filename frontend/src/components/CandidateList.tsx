@@ -27,7 +27,7 @@ export const CandidateList: React.FC<CandidateListProps> = ({ snapshot }) => {
         <span className="en">TOP CANDIDATES & MATCHED EVIDENCE</span>
       </div>
 
-      <div style={{ marginBottom: '12px', fontFamily: 'var(--mono)', fontSize: '11px', color: 'var(--ink-faint)' }}>
+      <div className="panel-kicker">
         SHOWING TOP {candidates.length} CANDIDATES FROM HYBRID RETRIEVAL & CROSS-ENCODER RERANK:
       </div>
 
@@ -41,14 +41,14 @@ export const CandidateList: React.FC<CandidateListProps> = ({ snapshot }) => {
             <div className="candidate-head">
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                  <span className="tag" style={{ fontFamily: 'var(--mono)', fontSize: '10px' }}>
+                  <span className="tag tag--rank">
                     RANK #{idx + 1}
                   </span>
-                  <span style={{ fontFamily: 'var(--mono)', fontSize: '11px', color: 'var(--ink-soft)', fontWeight: 600 }}>
+                  <span className="candidate-id">
                     {cand.id}
                   </span>
                   {cand.is_related && (
-                    <span className="tag" style={{ borderColor: 'var(--ink)', color: 'var(--ink)', fontWeight: 600 }}>
+                    <span className="tag tag--strong">
                       MATCHED RELATED
                     </span>
                   )}
@@ -61,7 +61,7 @@ export const CandidateList: React.FC<CandidateListProps> = ({ snapshot }) => {
                   <span className="candidate-score-pill">RRF: {cand.score.toFixed(4)}</span>
                 )}
                 {cand.rerank_score !== undefined && cand.rerank_score !== null && (
-                  <span className="candidate-score-pill" style={{ borderColor: 'var(--ink)' }}>
+                  <span className="candidate-score-pill candidate-score-pill--rerank">
                     RERANK: {cand.rerank_score.toFixed(4)}
                   </span>
                 )}
@@ -77,9 +77,8 @@ export const CandidateList: React.FC<CandidateListProps> = ({ snapshot }) => {
             <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'flex-end' }}>
               <button
                 type="button"
-                className="btn btn--sm"
+                className="btn btn--sm btn--xs"
                 onClick={() => toggleExpand(cand.id)}
-                style={{ fontSize: '9.5px', padding: '3px 8px' }}
               >
                 {isExpanded ? 'COLLAPSE EVIDENCE ▴' : 'EXPAND EVIDENCE ▾'}
               </button>

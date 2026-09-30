@@ -1,0 +1,96 @@
+/* ==========================================================================
+   设计 Token —— 本项目唯一允许出现颜色值的文件
+   来源与用法见仓库根目录 DESIGN.md。组件与样式只引用下方「语义层」变量。
+   ========================================================================== */
+
+:root {
+  /* ---------- 1. 原色：从参考视频逐帧取色（k-means / Lab），不要手改 ---------- */
+  --palette-electric: #0B1AFE;   /* 电光蓝：饱和像素 36.6%，主色 */
+  --palette-caption: #1119C8;    /* 片尾字幕色：标题与强调文字 */
+  --palette-sky: #04BCFE;        /* 天青：饱和像素 18.0% */
+  --palette-sky-light: #46CFFE;  /* 浅天青：饱和像素 7.4% */
+  --palette-cyan-pale: #97E4FF;  /* 淡青：浅色像素 10.4% */
+  --palette-ice: #E5F8FF;        /* 冰蓝：浅色像素 24.1%，页面底色 */
+  --palette-white: #FFFFFF;      /* 白：浅色像素 58.8% */
+  --palette-sun: #FEDE40;        /* 明黄：饱和像素 12.5%，点亮 */
+  --palette-butter: #FFEB8A;     /* 奶黄：饱和像素 15.9% */
+  --palette-cream: #FFF3B9;      /* 淡奶黄：浅色像素 3.7% */
+  --palette-mint: #00DCB0;       /* 薄荷：饱和像素 3.7%，“一点光” */
+  --palette-periwinkle: #4C65F2; /* 长春花蓝：饱和像素 5.8% */
+  --palette-lavender: #B3BAE9;   /* 灰紫：浅色像素 3.0% */
+
+  /* ---------- 2. 派生色：电光蓝同色相压暗，只为文字可读性 ---------- */
+  --palette-ink: #050C7A;        /* 正文，白底对比度 15.7 */
+  --palette-ink-soft: #5F63AA;   /* 次级文字，白底 5.5 / 冰蓝底 5.0 */
+  --palette-ink-meta: #3E53C6;   /* 等宽元信息，白底 6.5 */
+  --palette-shade: #0711A8;      /* 硬投影（2.5D 厚度） */
+
+  /* ---------- 3. 语义层：组件只用这一层 ---------- */
+  --bg-page: var(--palette-ice);
+  --bg-page-gradient: linear-gradient(168deg, var(--palette-white) 0%, var(--palette-ice) 62%, var(--palette-ice) 100%);
+  --surface: var(--palette-white);
+  --surface-tint: var(--palette-ice);
+  --surface-accent: var(--palette-cream);
+  --surface-inverse: var(--palette-electric);
+  --surface-code: var(--palette-ink);
+  --surface-glass: rgb(255 255 255 / 0.86);
+
+  --text: var(--palette-ink);
+  --text-strong: var(--palette-caption);
+  --text-muted: var(--palette-ink-soft);
+  --text-meta: var(--palette-ink-meta);
+  --text-on-inverse: var(--palette-white);
+  --text-on-inverse-muted: rgb(255 255 255 / 0.74);
+  --text-on-code: var(--palette-ice);
+
+  --border: var(--palette-lavender);
+  --border-strong: var(--palette-periwinkle);
+  --divider: var(--palette-lavender);
+  --divider-soft: var(--palette-cyan-pale);
+
+  --primary: var(--palette-electric);
+  --primary-hover: var(--palette-caption);
+  --primary-shade: var(--palette-shade);
+  --on-primary: var(--palette-white);
+
+  --accent: var(--palette-sun);          /* 点亮：注意、进行中、当前 */
+  --accent-soft: var(--palette-butter);
+  --success: var(--palette-mint);        /* 完成、在线、“一点光” */
+  --info: var(--palette-sky);
+  --info-soft: var(--palette-cyan-pale);
+
+  --focus-ring: var(--palette-electric);
+  --focus-ring-inverse: var(--palette-sun);
+  --focus-halo: var(--palette-cyan-pale);
+
+  --overlay-inverse-hover: rgb(255 255 255 / 0.12);
+  --overlay-inverse-active: rgb(255 255 255 / 0.2);
+  --overlay-inverse-border: rgb(255 255 255 / 0.4);
+  --overlay-inverse-faint: rgb(255 255 255 / 0.08);
+  --row-hover: rgb(11 26 254 / 0.04);
+  --ring-decor: rgb(76 101 242 / 0.14);
+
+  /* 2.5D 硬投影：视频里物体靠“同形错位的深一档蓝”表现厚度 */
+  --extrude-primary: 4px 4px 0 var(--primary-shade);
+  --extrude-primary-lift: 5px 5px 0 var(--primary-shade);
+  --extrude-soft: 4px 4px 0 var(--palette-cyan-pale);
+  --extrude-accent: 5px 5px 0 var(--accent);
+  --extrude-blue: 5px 5px 0 var(--primary);
+
+  /* ---------- 字体 ---------- */
+  --sans: "Geist", "Noto Sans SC", "PingFang SC", "Helvetica Neue", sans-serif;
+  --mono: "Geist Mono", "Noto Sans SC", "SFMono-Regular", Menlo, monospace;
+
+  /* ---------- 形状与节奏 ---------- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast: 0.15s;
+  --dur: 0.24s;
+
+  /* 四角星：视频贯穿全片的“一点光” */
+  --shape-star: polygon(50% 0%, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0% 50%, 39% 39%);
+}

@@ -28,14 +28,14 @@ export const EvaluationNotes: React.FC<EvaluationNotesProps> = ({ evaluation }) 
           <span className="cn">评测基准与边界</span>
           <span className="en">BENCHMARK (N={evaluation.sample_size}) & SYSTEM LIMITS</span>
         </div>
-        <button type="button" className="btn btn--sm" style={{ fontSize: '9px', padding: '2px 8px' }}>
+        <button type="button" className="btn btn--sm btn--xs">
           {isOpen ? 'HIDE BENCHMARK ▴' : 'VIEW BENCHMARK ▾'}
         </button>
       </div>
 
       {isOpen && (
-        <div style={{ border: '1px solid var(--rule)', borderRadius: '5px', padding: '20px', background: 'var(--paper)' }}>
-          <div style={{ fontFamily: 'var(--mono)', fontSize: '11px', color: 'var(--ink-faint)', marginBottom: '10px' }}>
+        <div className="benchmark-panel">
+          <div className="panel-kicker">
             HELD-OUT TEST SET (200 QUERIES, SEED=42, SELF-HIT EXCLUDED):
           </div>
 
