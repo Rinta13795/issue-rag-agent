@@ -202,6 +202,8 @@ class ChatSession(BaseModel):
     retrieval_calls: int = 0
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    cache_reported_input_tokens: int = 0
     last_elapsed_ms: int | None = None
     last_error: str | None = None
 

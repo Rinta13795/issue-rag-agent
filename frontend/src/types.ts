@@ -238,6 +238,8 @@ export interface ChatSession {
   retrieval_calls: number
   prompt_tokens: number | null
   completion_tokens: number | null
+  cached_input_tokens: number | null
+  cache_reported_input_tokens: number
   last_elapsed_ms: number | null
   last_error: string | null
 }
