@@ -9,6 +9,8 @@ from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 
+from langchain_core.messages import ToolMessage, message_to_dict
+
 from config import CHAT_MAX_MESSAGES, CHAT_MAX_SESSIONS, CHAT_SESSION_TTL_SECONDS
 from src.chat.models import ChatMessage, ChatSession, ChatSessionSummary, IssueDraft, MemoryProposal, SourceIssue, utc_now
 
@@ -88,13 +90,23 @@ class ChatStore:
         for key in expired:
             self._remove(key)
 
-    def create(self, repository_id: str | None = None, source_issue: SourceIssue | None = None) -> ChatSession:
+    def create(
+        self,
+        repository_id: str | None = None,
+        source_issue: SourceIssue | None = None,
+        memory_case_id: str | None = None,
+        investigation_summary: str = "",
+    ) -> ChatSession:
         with self._lock:
             self._cleanup()
             while len(self._sessions) >= self.max_sessions:
                 old_id = next(iter(self._sessions))
                 self._remove(old_id)
-            session = ChatSession(session_id=f"chat_{uuid.uuid4().hex[:16]}", repository_id=repository_id, source_issue=source_issue)
+            session = ChatSession(
+                session_id=f"chat_{uuid.uuid4().hex[:16]}", repository_id=repository_id,
+                source_issue=source_issue, memory_case_id=memory_case_id,
+                investigation_summary=investigation_summary,
+            )
             self._sessions[session.session_id] = (time.time(), session)
             self._client_ids[session.session_id] = {}
             self._persist(session.session_id)
@@ -136,6 +148,21 @@ class ChatStore:
             session = item[1]
             if session.status in ("thinking", "retrieving", "answering"):
                 raise RuntimeError("会话正在处理上一条消息")
+            if session.pending_question:
+                pending = session.pending_question
+                cancelled = content.startswith(("取消", "换个问题", "不问这个", "另一个问题"))
+                result = {"question": pending.question, "answer": content, "status": "cancelled" if cancelled else "answered"}
+                session.runtime_messages.append(message_to_dict(ToolMessage(
+                    content=json.dumps(result, ensure_ascii=False), tool_call_id=pending.call_id,
+                )))
+                for step in session.runtime_steps:
+                    if step.call_id == pending.call_id and step.status == "waiting":
+                        step.status = "cancelled" if cancelled else "completed"
+                        step.result = result
+                session.pending_question = None
+                session.open_question = None
+                session.runtime_resume = not cancelled
+                session.runtime_cancelled = cancelled and content.startswith("取消")
             message_id = f"msg_{uuid.uuid4().hex[:16]}"
             session.messages.append(ChatMessage(id=message_id, role="user", content=content))
             session.messages = session.messages[-CHAT_MAX_MESSAGES:]
@@ -146,6 +173,25 @@ class ChatStore:
             self._sessions[session_id] = (time.time(), session)
             self._persist(session_id)
             return message_id, True
+
+    def answer_question(self, session_id: str, question_id: str, answer: str, client_message_id: str, cancelled: bool = False) -> tuple[str, bool]:
+        """校验问题与幂等键后，在同一锁内绑定工具结果。"""
+        with self._lock:
+            session = self.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            content = "取消本次提问" if cancelled else answer.strip()
+            client_message_id = question_id + ":" + client_message_id
+            existing = self._client_ids[session_id].get(client_message_id)
+            if existing:
+                if existing[1] != content or not client_message_id.startswith(question_id + ":"):
+                    raise ValueError("答案提交已变化，请刷新")
+                return existing[0], False
+            if not session.pending_question or session.pending_question.question_id != question_id:
+                raise RuntimeError("这个问题已经关闭，请刷新对话")
+            if not content:
+                raise ValueError("请输入补充信息")
+            return self.add_user_message(session_id, content, client_message_id)
 
     def retry_failed_turn(self, session_id: str) -> str:
         """重新处理最后一条失败消息，不追加用户消息，也不丢失原对话。"""
@@ -162,6 +208,7 @@ class ChatStore:
             session.last_error = None
             # 失败可能发生在回答阶段；重试时允许重新检索，而不是误判为“已查过”。
             session.last_search_fingerprint = None
+            session.runtime_resume = bool(session.runtime_messages and session.runtime_messages[-1].get("type") == "tool")
             session.updated_at = utc_now()
             self._sessions[session_id] = (time.time(), session)
             self._persist(session_id)

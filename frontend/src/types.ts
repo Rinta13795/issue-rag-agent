@@ -108,7 +108,7 @@ export interface EvaluationSummary {
   notes: string[]
 }
 
-export type ChatStatus = 'idle' | 'thinking' | 'retrieving' | 'answering' | 'completed' | 'failed'
+export type ChatStatus = 'idle' | 'thinking' | 'retrieving' | 'answering' | 'completed' | 'failed' | 'waiting_for_user'
 
 export interface ChatFact {
   value: string
@@ -160,6 +160,43 @@ export interface MemoryRecord extends MemoryProposal {
   repository_id: string | null
   source_session_id: string
   created_at: string
+  status: 'observed' | 'active' | 'pending' | 'supported' | 'verified' | 'refuted'
+  origin: 'explicit' | 'inferred' | 'user' | 'assistant' | 'legacy'
+  entry_type: 'preference' | 'observation' | 'plan' | 'hypothesis' | 'attempt' | 'result' | 'summary'
+  case_id: string | null
+  source_refs: MemorySourceRef[]
+  supporting_sessions: string[]
+  revision: number
+  revision_history: MemoryRevision[]
+  modified_by: 'automatic' | 'user'
+}
+
+export interface MemorySourceRef {
+  source_type: 'user_message' | 'source_issue' | 'candidate' | 'published_issue' | 'tool_evidence'
+  source_id: string
+  excerpt: string
+  url: string | null
+  created_at: string
+}
+
+export interface MemoryRevision {
+  revision: number
+  text: string
+  status: string
+  changed_at: string
+  changed_by: 'automatic' | 'user'
+  reason: string | null
+}
+
+export interface MemoryCase {
+  case_id: string
+  repository_id: string
+  title: string
+  summary: string
+  source_issue_url: string | null
+  source_issue_id: string | null
+  session_ids: string[]
+  updated_at: string
 }
 
 export interface ChatMessage {
@@ -175,8 +212,15 @@ export interface ChatSession {
   session_id: string
   repository_id: string | null
   source_issue: SourceIssue | null
+  pending_question: { question_id: string; call_id: string; question: string; options: string[]; turn_id: string } | null
+  runtime_steps: { call_id: string; turn_id: string; tool: string; status: string; arguments: Record<string, unknown>; result: Record<string, unknown> }[]
+  evidence: { id: string; kind: string; title: string; text: string; url: string | null; fetched_at: string; truncated: boolean }[]
   issue_draft: IssueDraft | null
   memory_proposal: MemoryProposal | null
+  memory_case_id: string | null
+  investigation_summary: string
+  memory_organization: { enabled: boolean; status: 'idle' | 'queued' | 'processing' | 'completed' | 'failed'; last_error: string | null }
+  selected_memory_context: { preferences: Array<Record<string, unknown>>; cases: Array<Record<string, unknown>> }
   created_at: string
   updated_at: string
   status: ChatStatus

@@ -41,7 +41,7 @@ from src.demo.models import (
 )
 from src.demo.run_store import get_run_store
 from src.demo.runner import get_observable_runner
-from src.chat.models import ChatRepository, ChatSession, ChatSessionSummary, ConfirmMemoryRequest, CreateChatSessionRequest, MemoryProposal, MemoryRecord, PreviewIssueRequest, PublishIssueDraftRequest, SendChatMessageRequest, SendChatMessageResponse, SourceIssue, SyncRepositoryRequest, SyncRepositoryStatus, UpdateIssueDraftRequest
+from src.chat.models import AnswerQuestionRequest, ChatRepository, ChatSession, ChatSessionSummary, ConfirmMemoryRequest, CreateChatSessionRequest, MemoryCase, MemoryProposal, MemoryRecord, MemorySettings, MemorySourceRef, PreviewIssueRequest, PublishIssueDraftRequest, SendChatMessageRequest, SendChatMessageResponse, SourceIssue, SyncRepositoryRequest, SyncRepositoryStatus, UpdateIssueDraftRequest, UpdateMemoryRequest, UpdateMemorySettingsRequest, utc_now
 from src.chat.github_sync import GitHubPublishError, create_github_issue, fetch_issue, get_sync_manager, repository_id
 from src.chat.repositories import list_repositories, repository_exists
 from src.chat.service import get_chat_runner
@@ -253,7 +253,27 @@ def create_chat_session(request: CreateChatSessionRequest) -> ChatSession:
             request.repository_id == "openharness" and source_issue.repository.lower() == "hkuds/openharness"
         ):
             raise HTTPException(status_code=422, detail="Issue 不属于当前选择的仓库")
-    return get_chat_store().create(repository_id=request.repository_id, source_issue=source_issue)
+    memory_case_id = None
+    investigation_summary = ""
+    if request.case_id:
+        case = get_memory_store().get_case(request.case_id)
+        if case is None or case.repository_id != request.repository_id:
+            raise HTTPException(status_code=422, detail="问题案例不存在或不属于当前仓库")
+        if source_issue and case.source_issue_id and case.source_issue_id != f"{source_issue.repository}#{source_issue.number}":
+            raise HTTPException(status_code=422, detail="当前 Issue 与所选问题案例不匹配")
+        memory_case_id, investigation_summary = case.case_id, case.summary
+    session = get_chat_store().create(
+        repository_id=request.repository_id, source_issue=source_issue,
+        memory_case_id=memory_case_id, investigation_summary=investigation_summary,
+    )
+    if memory_case_id:
+        case = get_memory_store().get_case(memory_case_id)
+        if case:
+            get_memory_store().create_or_update_case(case.model_copy(update={
+                "session_ids": list(dict.fromkeys(case.session_ids + [session.session_id])),
+                "updated_at": utc_now(),
+            }))
+    return session
 
 
 @app.get("/api/chat/sessions/{session_id}", response_model=ChatSession)
@@ -282,6 +302,21 @@ def send_chat_message(session_id: str, request: SendChatMessageRequest) -> SendC
         get_chat_runner().submit(session_id, message_id)
     session = store.get(session_id)
     return SendChatMessageResponse(message_id=message_id, session_id=session_id, status=session.status)
+
+
+@app.post("/api/chat/sessions/{session_id}/answers", response_model=SendChatMessageResponse, status_code=202)
+def answer_chat_question(session_id: str, request: AnswerQuestionRequest) -> SendChatMessageResponse:
+    store = get_chat_store()
+    try:
+        message_id, created = store.answer_question(session_id, request.question_id, request.answer,
+                                                  request.client_message_id, request.cancelled)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期") from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if created:
+        get_chat_runner().submit(session_id, message_id)
+    return SendChatMessageResponse(message_id=message_id, session_id=session_id, status=store.get(session_id).status)
 
 
 @app.post("/api/chat/sessions/{session_id}/retry", response_model=SendChatMessageResponse, status_code=202)
@@ -371,6 +406,7 @@ def confirm_chat_memory(session_id: str, request: ConfirmMemoryRequest) -> Memor
     store = get_chat_store()
     if request.kind == "experience" and request.scope != "repository":
         raise HTTPException(status_code=422, detail="处理经验必须绑定当前仓库")
+    snapshot = store.get(session_id)
     try:
         original, repository_id = store.take_memory_proposal(session_id)
     except KeyError as exc:
@@ -379,8 +415,23 @@ def confirm_chat_memory(session_id: str, request: ConfirmMemoryRequest) -> Memor
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     proposal = MemoryProposal(kind=request.kind, scope=request.scope, text=request.text.strip(),
                               source_excerpt=original.source_excerpt)
+    source_ref = None
+    if snapshot:
+        message = next((item for item in snapshot.messages
+                        if item.role == "user" and original.source_excerpt in item.content), None)
+        if message:
+            source_ref = MemorySourceRef(source_type="user_message", source_id=message.id,
+                                         excerpt=original.source_excerpt)
+        elif snapshot.source_issue and original.source_excerpt in (
+            snapshot.source_issue.title + "\n" + snapshot.source_issue.body
+        ):
+            source_ref = MemorySourceRef(source_type="source_issue", source_id=snapshot.source_issue.url,
+                                         excerpt=original.source_excerpt, url=snapshot.source_issue.url)
     try:
-        return get_memory_store().add(proposal, repository_id, session_id)
+        return get_memory_store().add(
+            proposal, repository_id, session_id, source_ref=source_ref,
+            case_id=snapshot.memory_case_id if snapshot else None,
+        )
     except Exception:
         store.restore_memory_proposal(session_id, original)
         raise
@@ -389,6 +440,43 @@ def confirm_chat_memory(session_id: str, request: ConfirmMemoryRequest) -> Memor
 @app.get("/api/chat/memories", response_model=list[MemoryRecord])
 def list_chat_memories(repository_id: str | None = None) -> list[MemoryRecord]:
     return get_memory_store().list(repository_id)
+
+
+@app.patch("/api/chat/memories/{memory_id}", response_model=MemoryRecord)
+def update_chat_memory(memory_id: str, request: UpdateMemoryRequest) -> MemoryRecord:
+    try:
+        return get_memory_store().update(memory_id, request.text, request.status)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="记忆不存在") from exc
+
+
+@app.get("/api/chat/memory-settings", response_model=MemorySettings)
+def get_chat_memory_settings() -> MemorySettings:
+    return MemorySettings(auto_capture=get_memory_store().auto_capture)
+
+
+@app.patch("/api/chat/memory-settings", response_model=MemorySettings)
+def update_chat_memory_settings(request: UpdateMemorySettingsRequest) -> MemorySettings:
+    get_memory_store().set_auto_capture(request.auto_capture)
+    return MemorySettings(auto_capture=request.auto_capture)
+
+
+@app.get("/api/chat/memory-cases", response_model=list[MemoryCase])
+def list_chat_memory_cases(repository_id: str) -> list[MemoryCase]:
+    return get_memory_store().list_cases(repository_id)
+
+
+@app.get("/api/chat/memory-cases/{case_id}")
+def get_chat_memory_case(case_id: str) -> dict:
+    memory_store = get_memory_store()
+    case = memory_store.get_case(case_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail="问题案例不存在")
+    return {
+        "case": case.model_dump(mode="json"),
+        "entries": [record.model_dump(mode="json") for record in memory_store.list(case.repository_id)
+                    if record.case_id == case_id],
+    }
 
 
 @app.delete("/api/chat/memories/{memory_id}")

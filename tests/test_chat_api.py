@@ -193,3 +193,23 @@ def test_uncertain_publish_is_not_retried():
         assert store.get(session_id).issue_draft.status == "uncertain"
         assert client.post(url, json=payload).status_code == 409
         assert publisher.call_count == 1
+
+
+def test_answer_endpoint_binds_question_once_and_stale_answer_is_rejected():
+    from src.chat.models import PendingQuestion, RuntimeStep
+    store, runner = ChatStore(), FakeRunner()
+    session = store.create("vscode")
+    store.update(session.session_id, lambda s: (
+        setattr(s, "pending_question", PendingQuestion(question_id="q1",call_id="call",question="版本？",turn_id="m1")),
+        setattr(s, "status", "waiting_for_user"),
+        s.runtime_steps.append(RuntimeStep(call_id="call",turn_id="m1",tool="ask_user",status="waiting")),
+    ))
+    with patch("api.get_chat_store", return_value=store), patch("api.get_chat_runner", return_value=runner):
+        client = TestClient(app)
+        url = f"/api/chat/sessions/{session.session_id}/answers"
+        data = {"question_id":"q1","client_message_id":"answer-1","answer":"v2"}
+        assert client.post(url,json=data).status_code == 202
+        assert client.post(url,json=data).status_code == 202
+        assert len(runner.submitted) == 1
+        assert client.post(url,json={**data,"client_message_id":"answer-2"}).status_code == 409
+        assert store.get(session.session_id).runtime_resume
