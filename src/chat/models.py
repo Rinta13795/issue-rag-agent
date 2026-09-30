@@ -12,7 +12,7 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-ChatStatus = Literal["idle", "thinking", "retrieving", "answering", "completed", "failed"]
+ChatStatus = Literal["idle", "thinking", "retrieving", "answering", "completed", "failed", "waiting_for_user"]
 
 
 class ChatFact(BaseModel):
@@ -45,6 +45,9 @@ class SourceIssue(BaseModel):
     url: str
     comments: list[SourceIssueComment] = Field(default_factory=list)
     comments_truncated: bool = False
+    linked_prs: list[dict] = Field(default_factory=list)
+    links_truncated: bool = False
+    links_error: str | None = None
 
 
 class IssueDraft(BaseModel):
@@ -66,11 +69,55 @@ class MemoryProposal(BaseModel):
     source_excerpt: str
 
 
+class MemorySourceRef(BaseModel):
+    source_type: Literal["user_message", "source_issue", "candidate", "published_issue", "tool_evidence"]
+    source_id: str
+    excerpt: str
+    url: str | None = None
+    created_at: str = Field(default_factory=utc_now)
+
+
+class MemoryRevision(BaseModel):
+    revision: int
+    text: str
+    status: str
+    changed_at: str = Field(default_factory=utc_now)
+    changed_by: Literal["automatic", "user"] = "automatic"
+    reason: str | None = None
+
+
 class MemoryRecord(MemoryProposal):
     memory_id: str
     repository_id: str | None
     source_session_id: str
     created_at: str = Field(default_factory=utc_now)
+    status: Literal["observed", "active", "pending", "supported", "verified", "refuted"] = "pending"
+    verification_scope: Literal["unspecified", "problem", "solution"] = "unspecified"
+    origin: Literal["explicit", "inferred", "user", "assistant", "legacy"] = "user"
+    entry_type: Literal["preference", "observation", "plan", "hypothesis", "attempt", "result", "summary"] = "observation"
+    case_id: str | None = None
+    source_refs: list[MemorySourceRef] = Field(default_factory=list)
+    supporting_sessions: list[str] = Field(default_factory=list)
+    revision: int = 1
+    revision_history: list[MemoryRevision] = Field(default_factory=list)
+    modified_by: Literal["automatic", "user"] = "user"
+
+
+class MemoryCase(BaseModel):
+    case_id: str
+    repository_id: str
+    title: str
+    summary: str = ""
+    source_issue_url: str | None = None
+    source_issue_id: str | None = None
+    session_ids: list[str] = Field(default_factory=list)
+    updated_at: str = Field(default_factory=utc_now)
+
+
+class MemoryOrganizationStatus(BaseModel):
+    enabled: bool = True
+    status: Literal["idle", "queued", "processing", "completed", "failed"] = "idle"
+    last_error: str | None = None
 
 
 class ChatMessage(BaseModel):
@@ -82,12 +129,62 @@ class ChatMessage(BaseModel):
     action: str | None = None
 
 
+class InvestigationEvidence(BaseModel):
+    id: str
+    kind: Literal["issue", "comment", "pr", "diff", "search"]
+    title: str = ""
+    text: str = ""
+    url: str | None = None
+    fetched_at: str = Field(default_factory=utc_now)
+    truncated: bool = False
+    metadata: dict = Field(default_factory=dict)
+
+
+class RuntimeStep(BaseModel):
+    call_id: str
+    turn_id: str
+    tool: str
+    arguments: dict = Field(default_factory=dict)
+    status: Literal["running", "completed", "failed", "waiting", "cancelled"] = "running"
+    result: dict = Field(default_factory=dict)
+
+
+class PendingQuestion(BaseModel):
+    question_id: str
+    call_id: str
+    question: str
+    options: list[str] = Field(default_factory=list)
+    turn_id: str
+
+
+class AnswerQuestionRequest(BaseModel):
+    question_id: str = Field(min_length=1, max_length=100)
+    client_message_id: str = Field(min_length=1, max_length=100)
+    answer: str = Field(default="", max_length=CHAT_MAX_MESSAGE_CHARS)
+    cancelled: bool = False
+
+
 class ChatSession(BaseModel):
     session_id: str
     repository_id: str | None = None  # 旧会话没有仓库归属，不允许继续跨库检索
     source_issue: SourceIssue | None = None
+    pending_question: PendingQuestion | None = None
+    runtime_messages: list[dict] = Field(default_factory=list)
+    runtime_steps: list[RuntimeStep] = Field(default_factory=list)
+    evidence: list[InvestigationEvidence] = Field(default_factory=list)
+    final_response_mode: str | None = None
+    final_response_error: str | None = None
+    runtime_resume: bool = False
+    runtime_cancelled: bool = False
+    runtime_turn_id: str | None = None
+    runtime_memory_snapshot: dict = Field(default_factory=dict)
+    runtime_memory_ids: list[str] = Field(default_factory=list)
     issue_draft: IssueDraft | None = None
     memory_proposal: MemoryProposal | None = None
+    memory_case_id: str | None = None
+    investigation_summary: str = ""
+    memory_organization: MemoryOrganizationStatus = Field(default_factory=MemoryOrganizationStatus)
+    selected_memory_context: dict[str, list[dict]] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
     status: ChatStatus = "idle"
@@ -110,6 +207,7 @@ class ChatSession(BaseModel):
 class CreateChatSessionRequest(BaseModel):
     repository_id: str = Field(min_length=1, max_length=80)
     issue_url: str | None = Field(default=None, max_length=300)
+    case_id: str | None = Field(default=None, max_length=80)
 
 
 class PreviewIssueRequest(BaseModel):
@@ -133,6 +231,19 @@ class ConfirmMemoryRequest(BaseModel):
     text: str = Field(min_length=1, max_length=500)
     scope: Literal["global", "repository"]
     confirmed: bool
+
+
+class UpdateMemoryRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+    status: Literal["observed", "active", "pending", "supported", "verified", "refuted"] | None = None
+
+
+class MemorySettings(BaseModel):
+    auto_capture: bool = True
+
+
+class UpdateMemorySettingsRequest(BaseModel):
+    auto_capture: bool
 
 
 class ChatSessionSummary(BaseModel):

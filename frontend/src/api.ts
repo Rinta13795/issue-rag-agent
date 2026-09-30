@@ -1,4 +1,4 @@
-import type { ChatRepository, ChatSession, ChatSessionSummary, MemoryRecord, SourceIssue, SyncRepositoryStatus, EvaluationSummary, ExampleItem, RunSnapshot, SystemInfo } from './types'
+import type { ChatRepository, ChatSession, ChatSessionSummary, MemoryCase, MemoryRecord, SourceIssue, SyncRepositoryStatus, EvaluationSummary, ExampleItem, RunSnapshot, SystemInfo } from './types'
 
 const API_BASE = ''
 
@@ -43,10 +43,10 @@ export async function previewChatIssue(issueUrl: string): Promise<SourceIssue> {
   }))
 }
 
-export async function createChatSession(repositoryId: string, issueUrl?: string): Promise<ChatSession> {
+export async function createChatSession(repositoryId: string, issueUrl?: string, caseId?: string): Promise<ChatSession> {
   return chatJson(await fetch(`${API_BASE}/api/chat/sessions`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repository_id: repositoryId, issue_url: issueUrl || null }),
+    body: JSON.stringify({ repository_id: repositoryId, issue_url: issueUrl || null, case_id: caseId || null }),
   }))
 }
 
@@ -101,6 +101,27 @@ export async function listMemories(repositoryId?: string): Promise<MemoryRecord[
 
 export async function deleteMemory(memoryId: string): Promise<void> {
   await chatJson(await fetch(`${API_BASE}/api/chat/memories/${encodeURIComponent(memoryId)}`, { method: 'DELETE' }))
+}
+
+export async function updateMemory(memoryId: string, text: string, status: MemoryRecord['status']): Promise<MemoryRecord> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/memories/${encodeURIComponent(memoryId)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, status }),
+  }))
+}
+
+export async function listMemoryCases(repositoryId: string): Promise<MemoryCase[]> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/memory-cases?repository_id=${encodeURIComponent(repositoryId)}`))
+}
+
+export async function getMemorySettings(): Promise<{ auto_capture: boolean }> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/memory-settings`))
+}
+
+export async function updateMemorySettings(autoCapture: boolean): Promise<{ auto_capture: boolean }> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/memory-settings`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ auto_capture: autoCapture }),
+  }))
 }
 
 export async function createRun(issueText: string, sampleId?: string): Promise<{ run_id: string; status: string; created_at: string }> {
@@ -195,4 +216,11 @@ export async function fetchEvaluationSummary(): Promise<EvaluationSummary> {
   const res = await fetch(`${API_BASE}/api/evaluation/summary`)
   if (!res.ok) throw new Error('获取评测数据失败')
   return res.json()
+}
+
+export async function answerChatQuestion(sessionId: string, questionId: string, answer: string, clientMessageId: string, cancelled = false): Promise<{ message_id: string; session_id: string; status: string }> {
+  return chatJson(await fetch(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}/answers`, {
+    method: 'POST', body: JSON.stringify({ question_id: questionId, answer, client_message_id: clientMessageId, cancelled }),
+    headers: { 'Content-Type': 'application/json' },
+  }))
 }

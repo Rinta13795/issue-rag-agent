@@ -75,7 +75,7 @@ def fetch_issue(value: str) -> SourceIssue:
 def search_live_issues(full_name: str, query: str, limit: int = 10) -> list[dict]:
     """在 GitHub 当前公开 Issue 中搜索；结果不等于全仓库无遗漏证明。"""
     repository = normalize_repository(full_name)
-    compact = " ".join(query.split())[:180]
+    compact = " ".join(word for word in query.split() if not word.lower().startswith(("repo:", "org:", "user:", "is:", "type:")))[:180]
     if not compact:
         return []
     params = urlencode({"q": f"repo:{repository} is:issue {compact}", "per_page": min(limit, 20)})
