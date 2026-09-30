@@ -47,6 +47,7 @@ raw_issue
 - Embedding 用本地模型，不调 API。
 - 日志用 `loguru`，关键步骤打印日志。
 - 改动检索/评估逻辑时必须先跑 `python3 -m pytest tests/ -q`（当前 32 个测试）。
+- 写或改 UI 之前先读 `DESIGN.md`：组件只引用 `frontend/src/tokens.css` 的语义 token，不写硬编码颜色；改完跑 `npm run check:tokens`。
 
 ## 5. 接口规范
 

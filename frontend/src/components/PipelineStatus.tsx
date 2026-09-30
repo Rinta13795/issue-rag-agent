@@ -50,7 +50,7 @@ export const PipelineStatus: React.FC<PipelineStatusProps> = ({ snapshot, isAnal
                   : '—'}
               </div>
               {node.summary && (
-                <div style={{ fontFamily: 'var(--mono)', fontSize: '10px', color: 'var(--ink-faint)', marginTop: '4px' }}>
+                <div className="step-summary">
                   {node.summary}
                 </div>
               )}
@@ -61,24 +61,24 @@ export const PipelineStatus: React.FC<PipelineStatusProps> = ({ snapshot, isAnal
 
       {/* Query Analysis 详细产物展示 */}
       {analysis && (
-        <div style={{ border: '1px solid var(--rule)', borderRadius: '5px', padding: '14px 18px', marginBottom: '16px', background: 'var(--paper)' }}>
-          <div style={{ fontFamily: 'var(--mono)', fontSize: '10px', letterSpacing: '0.12em', color: 'var(--ink-faint)', textTransform: 'uppercase', marginBottom: '8px' }}>
+        <div className="analysis-card">
+          <div className="panel-kicker">
             Query Analysis 结构化输出
           </div>
-          <div style={{ fontSize: '13px', lineHeight: '1.7', color: 'var(--ink-body)' }}>
-            <div><b>改写检索词 (Rewritten Query)：</b> <span style={{ fontFamily: 'var(--mono)', fontSize: '12px' }}>{analysis.rewritten_query}</span></div>
+          <div className="analysis-body">
+            <div><b>改写检索词 (Rewritten Query)：</b> <span className="mono-inline">{analysis.rewritten_query}</span></div>
             {analysis.keywords.length > 0 && (
-              <div style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+              <div className="analysis-row">
                 <b>抽取关键词：</b>
                 {analysis.keywords.map((kw, i) => (
                   <span key={i} className="tag">{kw}</span>
                 ))}
               </div>
             )}
-            <div style={{ marginTop: '4px', fontSize: '12px', color: 'var(--ink-soft)' }}>
+            <div className="analysis-row analysis-row--muted">
               <b>组件标签 (Component)：</b> {analysis.component || 'None'}
               {analysis.component_filter_note && (
-                <span style={{ fontFamily: 'var(--mono)', marginLeft: '8px', color: 'var(--ink-faint)' }}>
+                <span className="analysis-note">
                   ({analysis.component_filter_note})
                 </span>
               )}
@@ -89,16 +89,16 @@ export const PipelineStatus: React.FC<PipelineStatusProps> = ({ snapshot, isAnal
 
       {/* 重试回环 Timeline */}
       {rounds.length > 1 && (
-        <div style={{ border: '1px solid var(--rule)', borderRadius: '5px', padding: '14px 18px', marginBottom: '16px' }}>
-          <div style={{ fontFamily: 'var(--mono)', fontSize: '10px', letterSpacing: '0.12em', color: 'var(--accent)', textTransform: 'uppercase', marginBottom: '8px' }}>
+        <div className="rounds-card">
+          <div className="panel-kicker panel-kicker--accent">
             低置信度回环诊断记录 (Retry Rounds: {rounds.length})
           </div>
           {rounds.map((r, i) => (
-            <div key={i} style={{ fontSize: '12.5px', lineHeight: '1.7', padding: '6px 0', borderBottom: i < rounds.length - 1 ? '1px dashed var(--rule)' : 'none' }}>
-              <span style={{ fontFamily: 'var(--mono)', fontWeight: 600 }}>ROUND 0{r.round}：</span>
+            <div key={i} className="round-row">
+              <span className="round-label">ROUND 0{r.round}：</span>
               <span>Decision={r.decision} (conf={r.confidence.toFixed(2)}), 召回={r.retrieved_count}条, 精排={r.candidate_count}条</span>
               {r.top_score !== undefined && r.top_score !== null && (
-                <span style={{ fontFamily: 'var(--mono)', color: 'var(--ink-faint)', marginLeft: '8px' }}>
+                <span className="round-score">
                   TopScore={r.top_score.toFixed(3)}
                 </span>
               )}

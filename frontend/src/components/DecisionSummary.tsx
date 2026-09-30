@@ -46,7 +46,7 @@ export const DecisionSummary: React.FC<DecisionSummaryProps> = ({ snapshot }) =>
           <div style={{ marginTop: '16px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
             <span className="field-label" style={{ marginBottom: 0 }}>关联命中 ID：</span>
             {dec.related_issues.map((id) => (
-              <span key={id} className="tag" style={{ borderColor: 'var(--ink)', color: 'var(--ink)', fontWeight: 600 }}>
+              <span key={id} className="tag tag--strong">
                 #{id}
               </span>
             ))}
