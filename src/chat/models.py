@@ -172,6 +172,8 @@ class ChatSession(BaseModel):
     runtime_messages: list[dict] = Field(default_factory=list)
     runtime_steps: list[RuntimeStep] = Field(default_factory=list)
     evidence: list[InvestigationEvidence] = Field(default_factory=list)
+    streaming_answer: str = ""
+    streaming_turn_id: str | None = None
     final_response_mode: str | None = None
     final_response_error: str | None = None
     runtime_resume: bool = False

@@ -25,6 +25,8 @@ class ChatStore:
         self.max_sessions = max_sessions
         self.ttl_seconds = ttl_seconds
         self._lock = threading.RLock()
+        self._versions: dict[str, int] = {}
+        self._committed_versions: dict[str, int] = {}
         self._sessions: OrderedDict[str, tuple[float, ChatSession]] = OrderedDict()
         self._client_ids: dict[str, dict[str, tuple[str, str]]] = {}
         self._db: sqlite3.Connection | None = None
@@ -53,6 +55,8 @@ class ChatStore:
                 continue
             session = ChatSession.model_validate_json(payload)
             if session.status in ("thinking", "retrieving", "answering"):
+                session.streaming_answer = ""
+                session.streaming_turn_id = None
                 session.status = "failed"
                 session.last_error = "服务重启中断了上一轮分析，请重新发送或补充问题。"
             if session.issue_draft and session.issue_draft.status == "publishing":
@@ -68,18 +72,22 @@ class ChatStore:
         self._db.commit()
 
     def _persist(self, session_id: str) -> None:
+        self._versions[session_id] = self._versions.get(session_id, 0) + 1
+        self._committed_versions[session_id] = self._versions[session_id]
         if self._db is None:
             return
         last_seen, session = self._sessions[session_id]
         self._db.execute(
             "INSERT OR REPLACE INTO chat_sessions VALUES (?, ?, ?, ?)",
-            (session_id, last_seen, session.model_dump_json(), json.dumps(self._client_ids[session_id])),
+            (session_id, last_seen, session.model_dump_json(exclude={"streaming_answer", "streaming_turn_id"}), json.dumps(self._client_ids[session_id])),
         )
         self._db.commit()
 
     def _remove(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
         self._client_ids.pop(session_id, None)
+        self._versions.pop(session_id, None)
+        self._committed_versions.pop(session_id, None)
         if self._db is not None:
             self._db.execute("DELETE FROM chat_sessions WHERE session_id = ?", (session_id,))
             self._db.commit()
@@ -166,6 +174,8 @@ class ChatStore:
             message_id = f"msg_{uuid.uuid4().hex[:16]}"
             session.messages.append(ChatMessage(id=message_id, role="user", content=content))
             session.messages = session.messages[-CHAT_MAX_MESSAGES:]
+            session.streaming_answer = ""
+            session.streaming_turn_id = None
             session.status = "thinking"
             session.last_error = None
             session.updated_at = utc_now()
@@ -204,6 +214,8 @@ class ChatStore:
             if session.status != "failed" or not session.messages or session.messages[-1].role != "user":
                 raise RuntimeError("当前没有可重试的失败消息")
             message_id = session.messages[-1].id
+            session.streaming_answer = ""
+            session.streaming_turn_id = None
             session.status = "thinking"
             session.last_error = None
             # 失败可能发生在回答阶段；重试时允许重新检索，而不是误判为“已查过”。
@@ -214,17 +226,33 @@ class ChatStore:
             self._persist(session_id)
             return message_id
 
-    def update(self, session_id: str, update_fn: Callable[[ChatSession], None]) -> ChatSession:
+    def update(self, session_id: str, update_fn: Callable[[ChatSession], None], *, persist: bool = True) -> ChatSession:
         with self._lock:
             item = self._sessions.get(session_id)
             if item is None:
                 raise KeyError(session_id)
             session = item[1]
             update_fn(session)
-            session.updated_at = utc_now()
+            if persist:
+                session.updated_at = utc_now()
             self._sessions[session_id] = (time.time(), session)
-            self._persist(session_id)
+            if persist:
+                self._persist(session_id)
+            else:
+                self._versions[session_id] = self._versions.get(session_id, 0) + 1
             return session.model_copy(deep=True)
+
+    def stream_snapshot(self, session_id: str, last_version: int):
+        """Read only on change; token previews do not write SQLite."""
+        with self._lock:
+            item = self._sessions.get(session_id)
+            version = self._versions.get(session_id, 0)
+            committed = self._committed_versions.get(session_id, 0)
+            if item is None:
+                return None, version, committed
+            if version == last_version:
+                return None, version, committed
+            return item[1].model_copy(deep=True), version, committed
 
     def save_issue_draft(self, session_id: str, title: str, body: str) -> ChatSession:
         """保存模型生成的可编辑草稿；新草稿替换未发布的旧草稿。"""

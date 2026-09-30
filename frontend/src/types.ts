@@ -209,6 +209,8 @@ export interface ChatMessage {
 }
 
 export interface ChatSession {
+  streaming_answer: string
+  streaming_turn_id: string | null
   session_id: string
   repository_id: string | null
   source_issue: SourceIssue | null
