@@ -29,6 +29,8 @@ from src.chat.models import ChatMessage, ChatSession
 from src.chat.models import MemoryProposal
 from src.chat.memory import MemoryStore, get_memory_store
 from src.chat.memory_service import MemoryService
+from src.chat.memory_prompt import memory_prompt_payload
+from src.chat.usage import record_usage
 from src.chat.models import MemoryCase, MemoryOrganizationStatus
 from src.chat.github_sync import search_live_issues
 from src.chat.repositories import list_repositories
@@ -86,35 +88,19 @@ class ChatService:
 
         self.store.update(session_id, count_call)
         response = self._llm(kind).invoke([SystemMessage(content=system), HumanMessage(content=payload)])
-        usage = getattr(response, "usage_metadata", None) or {}
-        if usage:
-            def count_tokens(session: ChatSession):
-                input_tokens = usage.get("input_tokens")
-                output_tokens = usage.get("output_tokens")
-                if isinstance(input_tokens, int):
-                    session.prompt_tokens = (session.prompt_tokens or 0) + input_tokens
-                if isinstance(output_tokens, int):
-                    session.completion_tokens = (session.completion_tokens or 0) + output_tokens
-
-            self.store.update(session_id, count_tokens)
+        self.store.update(session_id, lambda s: record_usage(s, response))
         return parse_json_object(response.content)
 
     def _extract_memory(self, payload: dict[str, Any]) -> dict[str, Any]:
         response = self._llm("answer").invoke([
             SystemMessage(content=MEMORY_ORGANIZER_SYSTEM),
-            HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
+            HumanMessage(content=json.dumps(memory_prompt_payload(payload), ensure_ascii=False, separators=(",", ":"))),
         ])
         session_id = payload.get("session_id")
-        usage = getattr(response, "usage_metadata", None) or {}
         if session_id:
             def update(session: ChatSession):
                 session.model_calls += 1
-                input_tokens = usage.get("input_tokens")
-                output_tokens = usage.get("output_tokens")
-                if isinstance(input_tokens, int):
-                    session.prompt_tokens = (session.prompt_tokens or 0) + input_tokens
-                if isinstance(output_tokens, int):
-                    session.completion_tokens = (session.completion_tokens or 0) + output_tokens
+                record_usage(session, response)
             try:
                 self.store.update(session_id, update)
             except KeyError:
@@ -205,6 +191,8 @@ class ChatService:
             "repository_id": snapshot.repository_id,
             "case_id": snapshot.memory_case_id,
             "investigation_summary": snapshot.investigation_summary,
+            "current_tool_evidence_ids": [step.result.get("evidence_id") for step in snapshot.runtime_steps
+                                          if step.turn_id == current_user.id and step.result.get("evidence_id")],
             "tool_evidence": [item.model_dump() for item in snapshot.evidence[-12:]],
             "existing_records": [item.model_dump() for item in self.memory_store.list(snapshot.repository_id)
                                  if item.case_id == snapshot.memory_case_id or item.kind == "preference"][:30],

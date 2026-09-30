@@ -9,6 +9,7 @@ from src.chat.github_sync import search_live_issues, normalize_repository
 from src.chat.github_research import read_issue, read_pr, search_prs
 from src.chat.final_response import parse_final_response
 from src.chat.streaming import streamed_response
+from src.chat.usage import record_usage
 from src.chat.models import ChatMessage, InvestigationEvidence, PendingQuestion, RuntimeStep
 from src.chat.repositories import list_repositories
 
@@ -18,7 +19,8 @@ search_issues 保留本地检索和重排。读工具只能在当前仓库。草
 仅缺少会影响调查方向的关键信息时 ask_user；一个问题，可给选项，允许自由输入。上下文已经有的信息不重复问。纯交流、偏好说明直接回答，不必创建调查。
 用户反馈“解决了”“有效”时承认其结果并结束当前调查，不要求重新提供故障线索。只说“解决了”不说明用了哪个办法，不能认定某个 PR 或建议已在用户环境验证。不自动继续查资料；可用普通回复自然地询问采用了哪个办法，用户不补充也能记录已知结果。失败反馈则接续当前尝试，不将助手建议当作用户已经执行。
 记忆中假设、计划不是已验证结论。当前焦点、当前案例摘要、近期消息帮助接续调查。
-最终回答用 JSON：{"answer":"中文回答，说明发现、依据及仍未知的部分", "citations":["实际证据ID"]}。引用仅限上下文和工具实际返回的 evidence/candidate ID，不编造 URL。工具失败和截断要说明实际影响，不推断不存在资料。达到预算时用已有资料回答并说明未完成的调查。
+回答先给简短结论，再给必要的操作步骤，通常不超过三个短段落。命令用 Markdown 代码块，分别换行。不要复述 Issue 英文标题、编号、作者名字、检索过程或内部证据 ID，不堆砌例行免责声明。需要时用一句话区分“社区临时办法”和“官方已发布修复”；只说明影响用户选择的未知部分。用户明确索要来源或原文时才在正文展开资料。来源统一通过 citations 返回，页面会在末尾提供可选查看入口。
+最终回答用 JSON：{"answer":"简洁中文结论与必要操作", "citations":["实际证据ID"]}。引用仅限上下文和工具实际返回的 evidence/candidate ID，不编造 URL。工具失败和截断要说明实际影响，不推断不存在资料。达到预算时用已有资料回答并说明未完成的调查。
 """
 
 class Query(BaseModel):
@@ -137,6 +139,9 @@ class InvestigationRuntime:
         if resume:
             messages = messages_from_dict(session.runtime_messages)
             context = session.runtime_memory_snapshot
+            # Old paused sessions stored context separately; retain their tool-call ordering.
+            if not any(isinstance(m, SystemMessage) and m.content.startswith("调查上下文：") for m in messages):
+                messages.insert(0, SystemMessage(content="调查上下文：" + json.dumps(context, ensure_ascii=False, separators=(",", ":"))))
         else:
             memory = self.service.memory_service.read_context(session.repository_id, current.content + " " + (session.source_issue.title if session.source_issue else ""), session.memory_case_id)
             context = {"repository_id": session.repository_id, "source_issue": source_issue_payload(session, 4000),
@@ -144,6 +149,8 @@ class InvestigationRuntime:
                        "investigation_summary": session.investigation_summary, "memory": memory,
                        "evidence": [{**e.model_dump(), "text": e.text[:2000], "truncated": e.truncated or len(e.text) > 2000} for e in session.evidence[-6:]]}
             messages = [HumanMessage(content=select_message_excerpt(m.content, 1800)) if m.role == "user" else AIMessage(content=select_message_excerpt(m.content, 1800)) for m in session.messages[-10:]]
+            # Stable history precedes changing memory/evidence. Keep this exact prefix throughout the tool loop.
+            messages.insert(len(messages) - 1, SystemMessage(content="调查上下文：" + json.dumps(context, ensure_ascii=False, separators=(",", ":"))))
             self.store.update(session_id, lambda s: (setattr(s, "selected_memory_context", memory), setattr(s, "runtime_memory_snapshot", context)))
         self.store.update(session_id, lambda s: (setattr(s, "runtime_resume", False), setattr(s, "runtime_turn_id", message_id)))
         cache = {}
@@ -163,12 +170,8 @@ class InvestigationRuntime:
             ), persist=False)
             def publish_answer(answer):
                 self.store.update(session_id, lambda s: setattr(s, "streaming_answer", answer), persist=False)
-            response = streamed_response(model, [SystemMessage(content=system), SystemMessage(content="调查上下文：" + json.dumps(context, ensure_ascii=False)), *messages], publish_answer)
-            usage = getattr(response, "usage_metadata", None) or {}
-            def usage_save(s):
-                if isinstance(usage.get("input_tokens"), int): s.prompt_tokens = (s.prompt_tokens or 0) + usage["input_tokens"]
-                if isinstance(usage.get("output_tokens"), int): s.completion_tokens = (s.completion_tokens or 0) + usage["output_tokens"]
-            self.store.update(session_id, usage_save)
+            response = streamed_response(model, [SystemMessage(content=system), *messages], publish_answer)
+            self.store.update(session_id, lambda s: record_usage(s, response))
             messages.append(response)
             save_messages()
             calls = getattr(response, "tool_calls", [])

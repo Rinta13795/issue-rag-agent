@@ -670,7 +670,15 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
           {session?.messages.map((message, index) => <article className={`chat-message chat-message--${message.role}`} key={message.id}>
             <div className="chat-message-meta">{message.role === 'user' ? '你' : 'Issue Agent'} · {message.action === 'retrieve' ? '已检索证据' : message.action === 'ask_user' ? '等待补充' : message.action === 'clarify' ? '需要澄清' : message.action === 'reply' ? '基于当前上下文' : '对话'}</div>
             {message.role === 'user' ? <p>{message.content}</p> : <AnswerMarkdown content={displayAnswer(message.content)} />}
-            {message.citations.length > 0 && <div className="chat-citation">依据：{message.citations.map((id, index) => <span key={id}>{index > 0 ? ' · ' : ''}{issueUrl(id) ? <a href={issueUrl(id)!} target="_blank" rel="noreferrer">{id} ↗</a> : id}</span>)}</div>}
+            {message.citations.length > 0 && <details className="chat-citation">
+              <summary>参考来源（{message.citations.length}）</summary>
+              {message.citations.map((id, index) => {
+                const url = issueUrl(id)
+                const number = url?.match(/\/(?:issues|pull)\/(\d+)/)?.[1]
+                const label = number ? `${url?.includes('/pull/') ? 'PR' : 'Issue'} #${number}` : `资料 ${index + 1}`
+                return <div key={id}>{url ? <a href={url} target="_blank" rel="noreferrer">{label} ↗</a> : <span>{label}（本地记录）</span>}</div>
+              })}
+            </details>}
             {message.action === 'clarify' && index === session.messages.length - 1 && !busy && <div className="chat-clarify-options" aria-label="下一步选择">
               {session.retrieval_calls === 0 && canSearchHistory && <button type="button" className="btn btn--sm" onClick={() => void send('请先用我已经描述的故障现象搜索本地历史 Issue。')}>先查历史 Issue</button>}
               {session.retrieval_calls > 0 ? <>
@@ -811,7 +819,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
           <p className="chat-side-note">本对话绑定 {activeRepository?.label || '未指定仓库'}。先查本地快照；GitHub 仓库还会尝试实时搜索。会话保留最近 7 天，候选不能代替完整修复验证。</p>
           {session?.live_search_status === 'failed' && <p className="chat-side-note">实时搜索未完成：{session.live_search_message || 'GitHub 暂时不可用'}。不能据此认定仓库没有相关 Issue。</p>}
           <p className="chat-side-note">{session ? `模型调用 ${session.model_calls} 次 · 检索 ${session.retrieval_calls} 次` : '等待会话建立'}</p>
-          {session?.last_elapsed_ms != null && <p className="chat-side-note">上一轮耗时 {session.last_elapsed_ms} ms{session.prompt_tokens != null ? ` · 已记录输入 ${session.prompt_tokens} token` : ''}</p>}
+          {session?.last_elapsed_ms != null && <p className="chat-side-note">上一轮耗时 {session.last_elapsed_ms} ms{session.prompt_tokens != null ? ` · 已记录输入 ${session.prompt_tokens} token` : ''}{session.cached_input_tokens != null && session.cache_reported_input_tokens > 0 ? ` · 已报告缓存命中 ${Math.round(100 * session.cached_input_tokens / session.cache_reported_input_tokens)}%（${session.cached_input_tokens}/${session.cache_reported_input_tokens}）` : ' · 服务商尚未报告缓存命中量'}</p>}
           <button type="button" className="btn btn--sm" onClick={onOpenTriage}>转到单次分诊</button>
         </section>
           </div>
