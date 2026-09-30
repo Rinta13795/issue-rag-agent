@@ -54,6 +54,24 @@ export async function getChatSession(sessionId: string): Promise<ChatSession> {
   return chatJson(await fetch(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}`))
 }
 
+export function listenChatEvents(sessionId: string, handlers: {
+  snapshot: (session: ChatSession) => void
+  answer: (answer: string, turnId: string | null) => void
+  connection: (connected: boolean) => void
+  expired: () => void
+}): () => void {
+  const stream = new EventSource(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}/events`)
+  stream.addEventListener('snapshot', (event) => handlers.snapshot(JSON.parse((event as MessageEvent).data)))
+  stream.addEventListener('answer', (event) => {
+    const value = JSON.parse((event as MessageEvent).data)
+    handlers.answer(value.answer, value.turn_id)
+  })
+  stream.addEventListener('expired', () => { stream.close(); handlers.expired() })
+  stream.onopen = () => handlers.connection(true)
+  stream.onerror = () => handlers.connection(false)
+  return () => stream.close()
+}
+
 export async function sendChatMessage(sessionId: string, content: string, clientMessageId: string): Promise<void> {
   await chatJson(await fetch(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
     method: 'POST',

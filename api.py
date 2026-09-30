@@ -18,10 +18,11 @@ import asyncio
 import json
 import os
 import uuid
+import time
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -282,6 +283,39 @@ def get_chat_session(session_id: str) -> ChatSession:
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在或已过期")
     return session
+
+
+@app.get("/api/chat/sessions/{session_id}/events")
+async def chat_session_events(session_id: str, request: Request):
+    store = get_chat_store()
+    if store.get(session_id) is None:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期")
+
+    async def events():
+        version, committed = -1, -1
+        heartbeat = time.monotonic()
+        while not await request.is_disconnected():
+            snapshot, next_version, next_committed = store.stream_snapshot(session_id, version)
+            if snapshot is not None:
+                if next_committed != committed:
+                    payload = snapshot.model_dump(exclude={"runtime_messages", "runtime_memory_snapshot"})
+                    event = "snapshot"
+                else:
+                    payload = {"answer": snapshot.streaming_answer, "turn_id": snapshot.streaming_turn_id}
+                    event = "answer"
+                yield f"id: {next_version}\nevent: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                version, committed = next_version, next_committed
+            if time.monotonic() - heartbeat >= 15:
+                if store.get(session_id) is None:
+                    yield 'event: expired\ndata: {}\n\n'
+                    return
+                yield ': heartbeat\n\n'
+                heartbeat = time.monotonic()
+            await asyncio.sleep(0.08)
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
+    })
 
 
 @app.post("/api/chat/sessions/{session_id}/messages", response_model=SendChatMessageResponse, status_code=202)

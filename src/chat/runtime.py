@@ -8,6 +8,7 @@ from src.chat.context import candidate_from_doc, source_issue_payload, select_me
 from src.chat.github_sync import search_live_issues, normalize_repository
 from src.chat.github_research import read_issue, read_pr, search_prs
 from src.chat.final_response import parse_final_response
+from src.chat.streaming import streamed_response
 from src.chat.models import ChatMessage, InvestigationEvidence, PendingQuestion, RuntimeStep
 from src.chat.repositories import list_repositories
 
@@ -157,7 +158,12 @@ class InvestigationRuntime:
             self.store.update(session_id, lambda s: (setattr(s, "status", "answering"), setattr(s, "model_calls", s.model_calls + 1)))
             system = SYSTEM + ("\n本轮预算已到，请直接总结，不调用工具。" if final_only else "")
             model = client if final_only else client.bind_tools(TOOLS)
-            response = model.invoke([SystemMessage(content=system), SystemMessage(content="调查上下文：" + json.dumps(context, ensure_ascii=False)), *messages])
+            self.store.update(session_id, lambda s: (
+                setattr(s, "streaming_answer", ""), setattr(s, "streaming_turn_id", message_id),
+            ), persist=False)
+            def publish_answer(answer):
+                self.store.update(session_id, lambda s: setattr(s, "streaming_answer", answer), persist=False)
+            response = streamed_response(model, [SystemMessage(content=system), SystemMessage(content="调查上下文：" + json.dumps(context, ensure_ascii=False)), *messages], publish_answer)
             usage = getattr(response, "usage_metadata", None) or {}
             def usage_save(s):
                 if isinstance(usage.get("input_tokens"), int): s.prompt_tokens = (s.prompt_tokens or 0) + usage["input_tokens"]
@@ -176,6 +182,7 @@ class InvestigationRuntime:
                 ))
                 if result.error:
                     self.store.update(session_id, lambda s: (
+                        setattr(s, "streaming_answer", ""), setattr(s, "streaming_turn_id", None),
                         setattr(s, "status", "failed"), setattr(s, "last_error", result.error),
                     ))
                 else:
@@ -219,6 +226,8 @@ class InvestigationRuntime:
             if waiting:
                 self.service._ensure_case(session_id, current)
                 def pause(s):
+                    s.streaming_answer = ""
+                    s.streaming_turn_id = None
                     s.pending_question = waiting
                     s.open_question = waiting.question
                     s.status = "waiting_for_user"

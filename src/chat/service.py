@@ -72,6 +72,7 @@ class ChatService:
             max_tokens=CHAT_PLANNER_MAX_TOKENS if kind == "planner" else CHAT_ANSWER_MAX_TOKENS,
             timeout=LLM_TIMEOUT,
             max_retries=0,
+            stream_usage=True,
         )
         if kind == "planner":
             self.planner_llm = client
@@ -169,6 +170,8 @@ class ChatService:
                 citations=citations, action=action,
             ))
             session.messages = session.messages[-CHAT_MAX_MESSAGES:]
+            session.streaming_answer = ""
+            session.streaming_turn_id = None
             session.open_question = question
             session.status = "completed"
 
@@ -311,6 +314,8 @@ class ChatService:
                 public_error = "本轮分析没有完成。这条消息已保留，可以重试本轮。"
             try:
                 self.store.update(session_id, lambda session: (
+                    setattr(session, "streaming_answer", ""),
+                    setattr(session, "streaming_turn_id", None),
                     setattr(session, "status", "failed"),
                     setattr(session, "last_error", public_error),
                 ))

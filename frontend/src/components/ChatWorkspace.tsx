@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { answerChatQuestion, ChatApiError, confirmMemory, createChatSession, createIssueDraft, deleteMemory, editIssueDraft, getChatSession, getMemorySettings, getRepositorySync, listChatRepositories, listChatSessions, listMemories, listMemoryCases, previewChatIssue, proposeMemory, publishIssueDraft, retryChatMessage, sendChatMessage, syncChatRepository, updateMemory, updateMemorySettings } from '../api'
+import { answerChatQuestion, ChatApiError, confirmMemory, createChatSession, createIssueDraft, deleteMemory, editIssueDraft, getChatSession, getMemorySettings, getRepositorySync, listChatRepositories, listChatSessions, listenChatEvents, listMemories, listMemoryCases, previewChatIssue, proposeMemory, publishIssueDraft, retryChatMessage, sendChatMessage, syncChatRepository, updateMemory, updateMemorySettings } from '../api'
 import type { ChatRepository, ChatSession, ChatSessionSummary, MemoryCase, MemoryRecord } from '../types'
 
 // Older sessions can contain a JSON envelope mixed with prose or Markdown fences.
@@ -29,6 +29,19 @@ function displayAnswer(content: string): string {
   }
   if (/\{\s*"answer"\s*:/.test(content)) return '这条旧回答的格式不完整，无法展示完整结论。请重试这一轮或继续追问；已读取的调查资料仍保留。'
   return content
+}
+
+function AnswerMarkdown({ content }: { content: string }) {
+  return <div className="chat-markdown"><Markdown remarkPlugins={[remarkGfm]} components={{
+              a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+              img: ({ src, alt }) => <a href={typeof src === 'string' ? src : undefined} target="_blank" rel="noreferrer">{alt || '查看图片'}</a>,
+              h1: ({ children }) => <div role="heading" aria-level={1} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
+              h2: ({ children }) => <div role="heading" aria-level={2} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
+              h3: ({ children }) => <div role="heading" aria-level={3} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
+              h4: ({ children }) => <div role="heading" aria-level={4} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
+              h5: ({ children }) => <div role="heading" aria-level={5} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
+              h6: ({ children }) => <div role="heading" aria-level={6} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
+            }}>{content}</Markdown></div>
 }
 
 const STORAGE_KEY = 'issue-rag-local-chat-session'
@@ -158,20 +171,43 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
   }, [forgetMissingSession])
 
   useEffect(() => {
-    if (!sessionId || !sessionStatus || !activeStates.has(sessionStatus)) return
-    const timer = window.setInterval(() => {
-      getChatSession(sessionId).then((updated) => {
-        if (window.localStorage.getItem(STORAGE_KEY) === sessionId) setSession(updated)
-      }).catch((caught) => {
-        if (caught instanceof ChatApiError && caught.status === 404) {
-          forgetMissingSession(sessionId)
-        } else {
-          setError('会话连接中断，请稍后重试。')
-        }
-      })
-    }, 900)
-    return () => window.clearInterval(timer)
-  }, [sessionId, sessionStatus, forgetMissingSession])
+    if (!sessionId) return
+    let disposed = false
+    let polling = false
+    let timer: number | undefined
+    const selected = () => !disposed && window.localStorage.getItem(STORAGE_KEY) === sessionId
+    const applySnapshot = (updated: ChatSession) => {
+      if (!selected()) return
+      setSession((current) => current?.session_id === sessionId && current.updated_at > updated.updated_at ? current : updated)
+    }
+    const poll = async () => {
+      if (polling || !selected()) return
+      polling = true
+      try { applySnapshot(await getChatSession(sessionId)) }
+      catch (caught) {
+        if (caught instanceof ChatApiError && caught.status === 404 && selected()) forgetMissingSession(sessionId)
+      } finally { polling = false }
+    }
+    const close = listenChatEvents(sessionId, {
+      snapshot: applySnapshot,
+      answer: (answer, turnId) => {
+        if (!selected()) return
+        setSession((current) => {
+          if (!current || current.session_id !== sessionId || !activeStates.has(current.status)) return current
+          const latestUser = [...current.messages].reverse().find((message) => message.role === 'user')
+          if (turnId && latestUser?.id !== turnId) return current
+          return { ...current, streaming_answer: answer, streaming_turn_id: turnId }
+        })
+      },
+      connection: (connected) => {
+        if (disposed) return
+        if (connected && timer !== undefined) { window.clearInterval(timer); timer = undefined }
+        if (!connected && timer === undefined) { void poll(); timer = window.setInterval(() => void poll(), 1500) }
+      },
+      expired: () => { if (selected()) forgetMissingSession(sessionId) },
+    })
+    return () => { disposed = true; close(); if (timer !== undefined) window.clearInterval(timer) }
+  }, [sessionId, forgetMissingSession])
 
   useEffect(() => { if (sessionStatus === 'completed' || sessionStatus === 'failed' || sessionStatus === 'waiting_for_user') void refreshSessions() }, [sessionStatus, refreshSessions])
 
@@ -187,8 +223,8 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
     if (activeView !== 'chat') return
     const switched = lastViewedSessionRef.current !== sessionId
     lastViewedSessionRef.current = sessionId
-    if (switched || followConversationRef.current) endRef.current?.scrollIntoView({ behavior: switched ? 'instant' : 'smooth', block: 'end' })
-  }, [session?.messages.length, sessionId, activeView])
+    if (switched || followConversationRef.current) endRef.current?.scrollIntoView({ behavior: switched || session?.streaming_answer ? 'instant' : 'smooth', block: 'end' })
+  }, [session?.messages.length, session?.streaming_answer, session?.runtime_steps?.length, sessionId, activeView])
 
   useEffect(() => {
     setIssueTitle(session?.issue_draft?.title || '')
@@ -212,15 +248,6 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
     void getMemorySettings().then((settings) => setAutoCapture(settings.auto_capture)).catch(() => setAutoCapture(true))
   }, [])
 
-  useEffect(() => {
-    if (!sessionId || !session?.memory_organization || !['queued', 'processing'].includes(session.memory_organization.status)) return
-    const timer = window.setInterval(() => {
-      getChatSession(sessionId).then((updated) => {
-        if (window.localStorage.getItem(STORAGE_KEY) === sessionId) setSession(updated)
-      }).catch(() => undefined)
-    }, 900)
-    return () => window.clearInterval(timer)
-  }, [sessionId, session?.memory_organization?.status])
 
   const startNew = () => {
     navigate('chat')
@@ -358,7 +385,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
       await sendChatMessage(session.session_id, content, window.crypto.randomUUID())
       if (!suggestion) setDraft('')
       const updated = await getChatSession(session.session_id)
-      if (window.localStorage.getItem(STORAGE_KEY) === session.session_id) setSession(updated)
+      if (window.localStorage.getItem(STORAGE_KEY) === session.session_id) setSession((current) => current?.session_id === updated.session_id && current.updated_at > updated.updated_at ? current : updated)
     } catch (caught) {
       if (caught instanceof ChatApiError && caught.status === 404) {
         forgetMissingSession(session.session_id)
@@ -378,7 +405,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
     try {
       await answerChatQuestion(id, session.pending_question.question_id, answer, window.crypto.randomUUID(), cancelled)
       const updated = await getChatSession(id)
-      if (window.localStorage.getItem(STORAGE_KEY) === id) setSession(updated)
+      if (window.localStorage.getItem(STORAGE_KEY) === id) setSession((current) => current?.session_id === updated.session_id && current.updated_at > updated.updated_at ? current : updated)
     } catch (caught) { setError(caught instanceof Error ? caught.message : '补充信息提交失败') }
     finally { setIsSending(false) }
   }
@@ -390,7 +417,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
     try {
       await retryChatMessage(session.session_id)
       const updated = await getChatSession(session.session_id)
-      if (window.localStorage.getItem(STORAGE_KEY) === session.session_id) setSession(updated)
+      if (window.localStorage.getItem(STORAGE_KEY) === session.session_id) setSession((current) => current?.session_id === updated.session_id && current.updated_at > updated.updated_at ? current : updated)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '重试失败')
     } finally {
@@ -504,6 +531,12 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
   }
 
   const busy = isSending || Boolean(session && activeStates.has(session.status))
+  const currentTurn = [...(session?.messages || [])].reverse().find((message) => message.role === 'user')?.id
+  const runningTool = [...(session?.runtime_steps || [])].reverse().find((step) => step.turn_id === currentTurn && step.status === 'running')
+  const progressLabel = runningTool
+    ? ({ search_issues: '正在搜索 Issue', read_issue: '正在读取 Issue 与关联 PR', read_pr: '正在读取 PR', search_prs: '正在搜索相似 PR', draft_issue: '正在起草 Issue' } as Record<string, string>)[runningTool.tool] || '正在读取调查资料'
+    : statusLabels[session?.status || ''] || '正在发送'
+
   const activeRepository = repositories.find((repo) => repo.id === session?.repository_id)
   const issueUrl = (id: string): string | null => {
     const evidenceUrl = session?.evidence?.find((item) => item.id === id)?.url
@@ -636,16 +669,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
         <div className="chat-messages" aria-live="polite">
           {session?.messages.map((message, index) => <article className={`chat-message chat-message--${message.role}`} key={message.id}>
             <div className="chat-message-meta">{message.role === 'user' ? '你' : 'Issue Agent'} · {message.action === 'retrieve' ? '已检索证据' : message.action === 'ask_user' ? '等待补充' : message.action === 'clarify' ? '需要澄清' : message.action === 'reply' ? '基于当前上下文' : '对话'}</div>
-            {message.role === 'user' ? <p>{message.content}</p> : <div className="chat-markdown"><Markdown remarkPlugins={[remarkGfm]} components={{
-              a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
-              img: ({ src, alt }) => <a href={typeof src === 'string' ? src : undefined} target="_blank" rel="noreferrer">{alt || '查看图片'}</a>,
-              h1: ({ children }) => <div role="heading" aria-level={1} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
-              h2: ({ children }) => <div role="heading" aria-level={2} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
-              h3: ({ children }) => <div role="heading" aria-level={3} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
-              h4: ({ children }) => <div role="heading" aria-level={4} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
-              h5: ({ children }) => <div role="heading" aria-level={5} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
-              h6: ({ children }) => <div role="heading" aria-level={6} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
-            }}>{displayAnswer(message.content)}</Markdown></div>}
+            {message.role === 'user' ? <p>{message.content}</p> : <AnswerMarkdown content={displayAnswer(message.content)} />}
             {message.citations.length > 0 && <div className="chat-citation">依据：{message.citations.map((id, index) => <span key={id}>{index > 0 ? ' · ' : ''}{issueUrl(id) ? <a href={issueUrl(id)!} target="_blank" rel="noreferrer">{id} ↗</a> : id}</span>)}</div>}
             {message.action === 'clarify' && index === session.messages.length - 1 && !busy && <div className="chat-clarify-options" aria-label="下一步选择">
               {session.retrieval_calls === 0 && canSearchHistory && <button type="button" className="btn btn--sm" onClick={() => void send('请先用我已经描述的故障现象搜索本地历史 Issue。')}>先查历史 Issue</button>}
@@ -655,6 +679,10 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
               </> : <button type="button" className="btn btn--sm" onClick={() => prefill(draft)}>补充线索</button>}
             </div>}
           </article>)}
+          {busy && session?.streaming_answer && <article className="chat-message chat-message--assistant">
+            <div className="chat-message-meta">Issue Agent · 正在生成回答</div>
+            <AnswerMarkdown content={session.streaming_answer} />
+          </article>}
           {session?.pending_question && <div className="chat-question" aria-label="补充调查信息">
             <p className="chat-question-hint">选择符合的情况，点选后继续调查。</p>
             <div className="chat-question-options">
@@ -666,7 +694,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
             <summary>查看调查过程</summary>
             <div className="chat-evidence-content">{session?.runtime_steps.slice(-10).map((step, index) => <p className="chat-side-note" key={`${step.call_id}-${index}`}>{({ search_issues: '搜索 Issue', read_issue: '读取 Issue 与关联 PR', read_pr: '读取 PR', search_prs: '搜索相似 PR', ask_user: '等待补充', draft_issue: '起草 Issue' } as Record<string, string>)[step.tool] || step.tool} · {({ completed: '完成', failed: '失败', waiting: '等待回答', running: '进行中', cancelled: '已取消' } as Record<string, string>)[step.status] || step.status}</p>)}</div>
           </details>}
-          {busy && <div className="chat-progress" role="status">{statusLabels[session?.status || ''] || '正在发送'}…</div>}
+          {busy && !session?.streaming_answer && <div className="chat-progress" role="status">{progressLabel}…</div>}
           <div ref={endRef} />
         </div>
         {(error || session?.last_error) && <div className="chat-connection-error" role="alert">
