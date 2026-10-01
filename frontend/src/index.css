@@ -804,6 +804,38 @@ input[type="checkbox"] {
 }
 
 .chat-workspace--collapsed { grid-template-columns: minmax(0, 1fr); }
+
+/* 显式放置网格项，避免下面两个叠加层参与自动排布、把主区挤走 */
+.chat-workspace--scoped > .chat-session-list { grid-column: 1; grid-row: 1; }
+.chat-workspace--scoped > .chat-main-area { grid-column: -2 / -1; grid-row: 1; }
+
+/* 主区域的暗角与胶片颗粒：作为网格项叠在主区上方，不改 DOM 与布局，不拦截点击 */
+.chat-workspace--scoped::before,
+.chat-workspace--scoped::after {
+  content: "";
+  grid-column: -2 / -1;
+  grid-row: 1;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.chat-workspace--scoped::before {
+  background: radial-gradient(ellipse 78% 72% at 50% 46%, transparent 52%, var(--vignette-mid) 74%, var(--vignette-edge) 100%);
+}
+
+.chat-workspace--scoped::after {
+  background: var(--texture-grain);
+  opacity: var(--grain-opacity);
+  mix-blend-mode: multiply;
+  animation: film-grain 0.9s steps(3) infinite;
+}
+
+@keyframes film-grain {
+  0% { background-position: 0 0; }
+  33% { background-position: -47px 31px; }
+  66% { background-position: 63px -22px; }
+  100% { background-position: 0 0; }
+}
 .chat-workspace [hidden] { display: none !important; }
 
 /* 侧栏：整块电光蓝平面，对应视频里的蓝色大平面 */
@@ -1782,6 +1814,8 @@ input[type="checkbox"] {
   .candidate-head { flex-wrap: wrap; }
 
   .chat-workspace--scoped { display: block; }
+  .chat-workspace--scoped::before,
+  .chat-workspace--scoped::after { position: fixed; inset: 0; }
   .chat-session-list { height: 100dvh; padding: 24px 20px; gap: 16px; }
   .chat-main-area { height: 100dvh; }
   .chat-sidebar-toolbar { padding: 14px 20px; }
