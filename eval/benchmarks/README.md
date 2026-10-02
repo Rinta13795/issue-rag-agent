@@ -207,3 +207,19 @@ Benchmark ID：dual-query-retrieval-v1
 运行状态：NOT RUN
 当前不能声明：Recall、Rerank 命中率或端到端准确率已经提升
 ```
+
+---
+
+# Agent 任务评测（agent_tasks）
+
+对话调查 Agent 的端到端评测：能否顺着 Issue 找到真正的修复 PR，并且不夸大结论。
+完整方案见 `评测/09-Agent任务评测方案.md`。
+
+| 子命令 | 作用 |
+| --- | --- |
+| `build` | 从公开仓库的 Issue 时间线自动标注案例（`fixed_merged` / `no_fix`），写成 `auto_labeled` 草稿 |
+| `run` | 用真实模型逐案例运行，`--variant agent / no_pr_tools / search_only` 做工具消融，默认重复 3 次，`--judge` 可选 LLM 裁判 |
+| `compare` | 对比两次运行的汇总指标 |
+
+与本目录其他 benchmark 一致：只有人工核验为 `verified` 的案例进入正式结果；
+评分逻辑的单测见 `tests/test_agent_task_benchmark.py`。当前案例文件只有示例，尚未运行。
