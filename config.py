@@ -44,6 +44,17 @@ CHAT_MAX_MESSAGES = 80
 CHAT_PLANNER_MAX_TOKENS = 480
 CHAT_ANSWER_MAX_TOKENS = 1600
 
+# 对话历史窗口策略：sliding（默认，最近 N 条滑动）/ stepped / compact / case_summary / full，见 src/chat/history.py。
+CHAT_HISTORY_STRATEGY = "sliding"
+# 窗口大小（含当前消息）：sliding 每轮保留的条数；stepped 截断后保留的条数。
+CHAT_HISTORY_WINDOW = 10
+# stepped：窗口（含当前消息）超过该条数时一次性砍回 CHAT_HISTORY_WINDOW 条。
+CHAT_HISTORY_STEP_MAX = 20
+# compact / case_summary：未压缩的历史超过该条数时触发压缩。
+CHAT_HISTORY_COMPACT_TRIGGER = 16
+# compact / case_summary：压缩时保留最近这么多条原始消息，其余用摘要替换。
+CHAT_HISTORY_COMPACT_KEEP = 6
+
 
 # Embedding 模型名称：本地 HuggingFace 英文模型，不调用 API。数据集全为英文 issue，改用英文 all-MiniLM-L6-v2。
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
