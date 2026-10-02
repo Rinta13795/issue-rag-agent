@@ -3,11 +3,12 @@ import json
 import uuid
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, message_to_dict, messages_from_dict
 from pydantic import BaseModel, ConfigDict, Field
-from config import CHAT_MAX_CANDIDATES, HYBRID_TOP_K
+from config import CHAT_HISTORY_STRATEGY, CHAT_MAX_CANDIDATES, HYBRID_TOP_K
 from src.chat.context import candidate_from_doc, source_issue_payload, select_message_excerpt
 from src.chat.github_sync import search_live_issues, normalize_repository
 from src.chat.github_research import read_issue, read_pr, search_prs
 from src.chat.final_response import parse_final_response
+from src.chat.history import HISTORY_COMPACT_SYSTEM, select_history, to_langchain
 from src.chat.streaming import streamed_response
 from src.chat.usage import record_usage
 from src.chat.models import ChatMessage, InvestigationEvidence, PendingQuestion, RuntimeStep
@@ -47,6 +48,9 @@ DEFINITIONS = {
 TOOLS = [{"type": "function", "function": {"name": name, "description": description,
           "parameters": schema.model_json_schema()}} for name, (schema, description) in DEFINITIONS.items()]
 
+# 历史窗口策略：默认取 config；实验脚本可在进程内替换。
+HISTORY_STRATEGY = CHAT_HISTORY_STRATEGY
+
 class InvestigationRuntime:
     def __init__(self, service):
         self.service, self.store = service, service.store
@@ -69,6 +73,20 @@ class InvestigationRuntime:
             session.evidence = session.evidence[-60:]
         self.store.update(session_id, save)
         return {"evidence_id": evidence.id, "fetched_at": evidence.fetched_at, "truncated": evidence.truncated, "data": data}
+
+    def compact_history(self, session_id, previous_summary, old_messages):
+        """compact 策略：用一次模型调用把旧历史（连同上一版摘要）压成新摘要；失败时返回 None，保留原始历史。"""
+        payload = json.dumps({"previous_summary": previous_summary,
+                              "messages": [{"role": m.role, "text": select_message_excerpt(m.content, 1800)} for m in old_messages]},
+                             ensure_ascii=False)
+        try:
+            self.store.update(session_id, lambda s: setattr(s, "model_calls", s.model_calls + 1))
+            response = self.service._llm("planner").invoke([SystemMessage(content=HISTORY_COMPACT_SYSTEM), HumanMessage(content=payload)])
+            self.store.update(session_id, lambda s: record_usage(s, response))
+        except Exception:
+            return None
+        text = response.content if isinstance(response.content, str) else ""
+        return text.strip()[:1200] or None
 
     def execute(self, session_id, name, arguments):
         session = self.store.get(session_id)
@@ -148,9 +166,12 @@ class InvestigationRuntime:
                        "current_focus": session.focus_candidate_id, "candidates": [c.model_dump() for c in session.candidates],
                        "investigation_summary": session.investigation_summary, "memory": memory,
                        "evidence": [{**e.model_dump(), "text": e.text[:2000], "truncated": e.truncated or len(e.text) > 2000} for e in session.evidence[-6:]]}
-            messages = [HumanMessage(content=select_message_excerpt(m.content, 1800)) if m.role == "user" else AIMessage(content=select_message_excerpt(m.content, 1800)) for m in session.messages[-10:]]
+            history, window_state = select_history(session, message_id, HISTORY_STRATEGY,
+                                                   lambda previous, old: self.compact_history(session_id, previous, old))
+            if window_state:
+                self.store.update(session_id, lambda s: [setattr(s, key, value) for key, value in window_state.items()])
             # Stable history precedes changing memory/evidence. Keep this exact prefix throughout the tool loop.
-            messages.insert(len(messages) - 1, SystemMessage(content="调查上下文：" + json.dumps(context, ensure_ascii=False, separators=(",", ":"))))
+            messages = [*history, SystemMessage(content="调查上下文：" + json.dumps(context, ensure_ascii=False, separators=(",", ":"))), to_langchain(current)]
             self.store.update(session_id, lambda s: (setattr(s, "selected_memory_context", memory), setattr(s, "runtime_memory_snapshot", context)))
         self.store.update(session_id, lambda s: (setattr(s, "runtime_resume", False), setattr(s, "runtime_turn_id", message_id)))
         cache = {}
