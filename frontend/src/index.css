@@ -1813,10 +1813,24 @@ input[type="checkbox"] {
   .source-list > div { grid-template-columns: 1fr; gap: 4px; }
   .candidate-head { flex-wrap: wrap; }
 
-  .chat-workspace--scoped { display: block; }
+  .chat-workspace--scoped { display: block; position: relative; }
   .chat-workspace--scoped::before,
   .chat-workspace--scoped::after { position: fixed; inset: 0; }
-  .chat-session-list { height: 100dvh; padding: 24px 20px; gap: 16px; }
+  /* Non-modal history: leave the conversation and composer available. */
+  .chat-session-list {
+    position: absolute;
+    z-index: 10;
+    top: 64px;
+    left: 20px;
+    width: 264px;
+    max-width: calc(100% - 40px);
+    height: min(480px, 45dvh);
+    padding: 20px;
+    gap: 16px;
+    border-radius: 5px;
+  }
+  .chat-session-list::before,
+  .chat-session-list::after { display: none; }
   .chat-main-area { height: 100dvh; }
   .chat-sidebar-toolbar { padding: 14px 20px; }
   .chat-conversation-area { padding: 24px 20px; }

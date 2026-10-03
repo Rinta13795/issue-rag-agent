@@ -68,6 +68,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
   const [moreOpen, setMoreOpen] = useState(false)
   const sidebarCloseRef = useRef<HTMLButtonElement>(null)
   const sidebarOpenRef = useRef<HTMLButtonElement>(null)
+  const historyPanelRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
     const media = window.matchMedia('(max-width: 640px)')
@@ -78,6 +79,28 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
 
   useEffect(() => {
     if (isMobile && mobileHistoryOpen) sidebarCloseRef.current?.focus()
+  }, [isMobile, mobileHistoryOpen])
+
+  useEffect(() => {
+    if (!isMobile || !mobileHistoryOpen) return
+    const dismissOutside = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return
+      if (!historyPanelRef.current?.contains(event.target) && !sidebarOpenRef.current?.contains(event.target)) {
+        setMobileHistoryOpen(false)
+      }
+    }
+    const dismissEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMobileHistoryOpen(false)
+        sidebarOpenRef.current?.focus()
+      }
+    }
+    document.addEventListener('pointerdown', dismissOutside)
+    document.addEventListener('keydown', dismissEscape)
+    return () => {
+      document.removeEventListener('pointerdown', dismissOutside)
+      document.removeEventListener('keydown', dismissEscape)
+    }
   }, [isMobile, mobileHistoryOpen])
 
   const closeHistory = () => {
@@ -572,7 +595,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
   const sidebarHidden = isMobile ? !mobileHistoryOpen : sidebarCollapsed
 
   return <div className={`chat-workspace chat-workspace--scoped ${sidebarHidden ? 'chat-workspace--collapsed' : ''}`}>
-    <aside id="chat-history" className="chat-session-list" aria-label="历史对话" hidden={sidebarHidden}
+    <aside ref={historyPanelRef} id="chat-history" className="chat-session-list" aria-label="历史对话" hidden={sidebarHidden}
       onKeyDown={(event) => { if (event.key === 'Escape') closeHistory() }}>
       <div className="chat-sidebar-head">
         <button type="button" className="chat-brand" onClick={() => navigate('chat')}>Issue Agent</button>
@@ -603,8 +626,8 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
         </nav>}
       </div>
     </aside>
-    <div className={`chat-main-area ${activeView === 'chat' && hasConversation ? 'chat-main-area--thread' : ''}`} hidden={isMobile && mobileHistoryOpen}>
-      {sidebarHidden && <div className="chat-sidebar-toolbar"><button ref={sidebarOpenRef} type="button" className="btn btn--sm" onClick={openHistory} aria-expanded={!sidebarHidden} aria-controls="chat-history">{isMobile ? '历史对话' : '展开侧栏'}</button></div>}
+    <div className={`chat-main-area ${activeView === 'chat' && hasConversation ? 'chat-main-area--thread' : ''}`}>
+      {(isMobile || sidebarHidden) && <div className="chat-sidebar-toolbar"><button ref={sidebarOpenRef} type="button" className="btn btn--sm" onClick={mobileHistoryOpen ? closeHistory : openHistory} aria-expanded={!sidebarHidden} aria-controls="chat-history">{isMobile ? '历史对话' : '展开侧栏'}</button></div>}
       <div className="chat-conversation-area" hidden={activeView !== 'chat'}>
     {!hasConversation && <section className="chat-home" aria-label="开始对话">
       <div className="masthead-pre">ISSUE TRIAGE / CONVERSATION</div>
