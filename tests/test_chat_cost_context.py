@@ -42,7 +42,9 @@ def test_dynamic_context_follows_unchanged_history_and_precedes_current_user():
     send(store, service, session, '第一次问题', 'one')
     send(store, service, session, '第二次问题', 'two')
     messages = model.requests[1]
-    assert messages[1].content == '第一次问题'
-    assert messages[2].content == '第一次'
-    assert isinstance(messages[3], SystemMessage) and messages[3].content.startswith('调查上下文：')
-    assert messages[4].content == '第二次问题'
+    assert messages[1].content.startswith('会话记忆快照')
+    assert model.requests[0][1].content == messages[1].content
+    assert messages[2].content == '第一次问题'
+    assert messages[3].content == '第一次'
+    assert isinstance(messages[4], SystemMessage) and messages[4].content.startswith('调查上下文：')
+    assert messages[5].content == '第二次问题'

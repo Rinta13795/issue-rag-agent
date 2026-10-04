@@ -1,6 +1,7 @@
 """有限调查 Runtime：原生工具调用、可持久化提问与证据。"""
 import json
 import uuid
+from copy import deepcopy
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, message_to_dict, messages_from_dict
 from pydantic import BaseModel, ConfigDict, Field
 from config import CHAT_HISTORY_STRATEGY, CHAT_MAX_CANDIDATES, HYBRID_TOP_K
@@ -23,6 +24,8 @@ search_issues 保留本地检索和重排。读工具只能在当前仓库。草
 回答先给简短结论，再给必要的操作步骤，通常不超过三个短段落。命令用 Markdown 代码块，分别换行。不要复述 Issue 英文标题、编号、作者名字、检索过程或内部证据 ID，不堆砌例行免责声明。需要时用一句话区分“社区临时办法”和“官方已发布修复”；只说明影响用户选择的未知部分。用户明确索要来源或原文时才在正文展开资料。来源统一通过 citations 返回，页面会在末尾提供可选查看入口。
 最终回答用 JSON：{"answer":"简洁中文结论与必要操作", "citations":["实际证据ID"]}。引用仅限上下文和工具实际返回的 evidence/candidate ID，不编造 URL。工具失败和截断要说明实际影响，不推断不存在资料。达到预算时用已有资料回答并说明未完成的调查。
 """
+
+MEMORY_PREFIX = "会话记忆快照（首次加载；不是实时状态，后续用户纠正优先）："
 
 class Query(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -54,6 +57,22 @@ HISTORY_STRATEGY = CHAT_HISTORY_STRATEGY
 class InvestigationRuntime:
     def __init__(self, service):
         self.service, self.store = service, service.store
+
+    def session_memory(self, session, current):
+        """只初始化一次读取视图；后台写入记忆不覆盖当前会话快照。"""
+        if session.session_memory_snapshot is not None:
+            return session.session_memory_snapshot
+        # 旧会话沿用最后一次已经选入的记忆，不强制重新检索。
+        memory = deepcopy(session.selected_memory_context or self.service.memory_service.read_context(
+            session.repository_id,
+            current.content + " " + (session.source_issue.title if session.source_issue else ""),
+            session.memory_case_id,
+        ))
+        self.store.update(session.session_id, lambda s: (
+            setattr(s, "session_memory_snapshot", memory),
+            setattr(s, "selected_memory_context", memory),
+        ))
+        return memory
 
     def repository(self, session):
         repo = next((repo for repo in list_repositories() if repo.id == session.repository_id), None)
@@ -161,18 +180,20 @@ class InvestigationRuntime:
             if not any(isinstance(m, SystemMessage) and m.content.startswith("调查上下文：") for m in messages):
                 messages.insert(0, SystemMessage(content="调查上下文：" + json.dumps(context, ensure_ascii=False, separators=(",", ":"))))
         else:
-            memory = self.service.memory_service.read_context(session.repository_id, current.content + " " + (session.source_issue.title if session.source_issue else ""), session.memory_case_id)
+            memory = self.session_memory(session, current)
             context = {"repository_id": session.repository_id, "source_issue": source_issue_payload(session, 4000),
                        "current_focus": session.focus_candidate_id, "candidates": [c.model_dump() for c in session.candidates],
-                       "investigation_summary": session.investigation_summary, "memory": memory,
+                       "investigation_summary": session.investigation_summary,
                        "evidence": [{**e.model_dump(), "text": e.text[:2000], "truncated": e.truncated or len(e.text) > 2000} for e in session.evidence[-6:]]}
             history, window_state = select_history(session, message_id, HISTORY_STRATEGY,
                                                    lambda previous, old: self.compact_history(session_id, previous, old))
             if window_state:
                 self.store.update(session_id, lambda s: [setattr(s, key, value) for key, value in window_state.items()])
-            # Stable history precedes changing memory/evidence. Keep this exact prefix throughout the tool loop.
-            messages = [*history, SystemMessage(content="调查上下文：" + json.dumps(context, ensure_ascii=False, separators=(",", ":"))), to_langchain(current)]
-            self.store.update(session_id, lambda s: (setattr(s, "selected_memory_context", memory), setattr(s, "runtime_memory_snapshot", context)))
+            # Keep this message prefix unchanged throughout the tool loop.
+            # 固定记忆放在会变化的历史与调查状态之前，建立可复用前缀。
+            messages = [SystemMessage(content=MEMORY_PREFIX + json.dumps(memory, ensure_ascii=False, separators=(",", ":"))),
+                        *history, SystemMessage(content="调查上下文：" + json.dumps(context, ensure_ascii=False, separators=(",", ":"))), to_langchain(current)]
+            self.store.update(session_id, lambda s: setattr(s, "runtime_memory_snapshot", context))
         self.store.update(session_id, lambda s: (setattr(s, "runtime_resume", False), setattr(s, "runtime_turn_id", message_id)))
         cache = {}
         tool_count = 0

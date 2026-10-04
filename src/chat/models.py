@@ -180,6 +180,8 @@ class ChatSession(BaseModel):
     runtime_cancelled: bool = False
     runtime_turn_id: str | None = None
     runtime_memory_snapshot: dict = Field(default_factory=dict)
+    # None = 尚未加载；空快照也算已加载，不能因为为空就每轮重新读库。
+    session_memory_snapshot: dict[str, list[dict]] | None = None
     runtime_memory_ids: list[str] = Field(default_factory=list)
     history_window_start: str | None = None  # stepped：当前窗口的第一条消息
     history_summary: str = ""  # compact / case_summary：替换旧历史的摘要
