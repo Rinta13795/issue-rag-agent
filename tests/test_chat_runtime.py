@@ -178,7 +178,12 @@ def test_every_completed_turn_organizes_automatically(tmp_path):
     model.responses.append(reply("先查 PR"))
     memory.set_auto_capture(False)
     second = send(store, service, session, "下一次调查", "second")
-    assert second.selected_memory_context["preferences"][0]["text"] == "每次先查关联 PR"
+    # 本会话首轮快照保持不变；后台新记忆由下一次新会话加载。
+    assert second.selected_memory_context["preferences"] == []
+    new_session = store.create("repo")
+    model.responses.append(reply("先查 PR"))
+    fresh = send(store, service, new_session, "下一次调查", "fresh")
+    assert fresh.selected_memory_context["preferences"][0]["text"] == "每次先查关联 PR"
 
 
 def test_actual_plain_text_reply_to_resolution_is_visible():
@@ -197,3 +202,66 @@ def test_invalid_final_output_can_retry_without_fake_answer():
     service.answer_llm = Model(reply("回答完成"))
     service.process_turn(session.session_id, store.retry_failed_turn(session.session_id))
     assert store.get(session.session_id).status == "completed"
+
+
+def test_memory_snapshot_stays_stable_while_user_correction_is_visible(monkeypatch):
+    model = Model(reply(), reply())
+    store, service, session = make(model, issue=False)
+    reads = []
+    memory = {"preferences": [{"memory_id": "p1", "text": "先查 Issue"}],
+              "prior_experiences": [], "cases": []}
+    monkeypatch.setattr(service.memory_service, "read_context", lambda *args: reads.append(args) or memory)
+    first = send(store, service, session, "查安装错误", "one")
+    # 模拟数据库侧已有内容更新；不能通过引用修改会话快照。
+    memory["preferences"][0]["text"] = "先查 PR"
+    second = send(store, service, session, "纠正一下，这次先查 PR，不是先查 Issue", "two")
+    assert len(reads) == 1
+    assert second.session_memory_snapshot == first.session_memory_snapshot
+    assert second.session_memory_snapshot["preferences"][0]["text"] == "先查 Issue"
+    assert model.requests[0][1].content == model.requests[1][1].content
+    assert "这次先查 PR" in model.requests[1][-1].content
+    assert "memory" not in second.runtime_memory_snapshot
+
+
+def test_empty_memory_snapshot_is_not_reloaded(monkeypatch):
+    store, service, session = make(Model(reply(), reply()), issue=False)
+    reads = []
+    monkeypatch.setattr(service.memory_service, "read_context", lambda *args: reads.append(args) or {})
+    send(store, service, session)
+    result = send(store, service, session, "再说一下", "two")
+    assert len(reads) == 1 and result.session_memory_snapshot == {}
+
+
+def test_memory_snapshot_survives_service_restart(tmp_path, monkeypatch):
+    db = tmp_path / "sessions.db"
+    store, service, session = make(Model(reply()), ChatStore(db_path=db), issue=False)
+    memory = {"preferences": [{"text": "只给 PowerShell"}], "prior_experiences": [], "cases": []}
+    monkeypatch.setattr(service.memory_service, "read_context", lambda *args: memory)
+    send(store, service, session)
+    restored = ChatStore(db_path=db)
+    model = Model(reply())
+    resumed_service = ChatService(store=restored, answer_llm=model, memory_store=service.memory_store)
+    monkeypatch.setattr(resumed_service.memory_service, "read_context", lambda *args: pytest.fail("不能重新选记忆"))
+    result = send(restored, resumed_service, session, "继续", "two")
+    assert result.session_memory_snapshot == memory
+    assert "只给 PowerShell" in model.requests[0][1].content
+
+
+def test_legacy_session_reuses_previously_selected_memory(monkeypatch):
+    store, service, session = make(Model(reply()), issue=False)
+    legacy = {"preferences": [{"text": "旧会话偏好"}], "prior_experiences": [], "cases": []}
+    store.update(session.session_id, lambda s: setattr(s, "selected_memory_context", legacy))
+    monkeypatch.setattr(service.memory_service, "read_context", lambda *args: pytest.fail("旧会话已有读取视图"))
+    result = send(store, service, session)
+    assert result.session_memory_snapshot == legacy
+
+
+def test_paused_question_reuses_same_memory_prefix(monkeypatch):
+    model = Model(tool("ask_user", {"question": "版本？"}), reply())
+    store, service, session = make(model, issue=False)
+    reads = []
+    monkeypatch.setattr(service.memory_service, "read_context", lambda *args: reads.append(args) or {})
+    send(store, service, session)
+    result = send(store, service, session, "v2", "two")
+    assert len(reads) == 1 and result.status == "completed"
+    assert model.requests[0][1].content == model.requests[1][1].content
