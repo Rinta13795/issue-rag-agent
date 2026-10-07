@@ -85,6 +85,19 @@ def test_question_restart_idempotence_and_resume(tmp_path):
     assert answers[-1]["answer"] == "v2"
     assert result.messages[-2].role == "user" and result.messages[-2].content == "v2"
 
+def test_choice_keeps_real_evidence_and_discards_fabricated_source(tmp_path, monkeypatch):
+    model = Model(tool("read_pr", {"number": 3}),
+                  tool("ask_user", {"question": "这个参考改法简化了状态保存。你想深入哪种方向？",
+                                    "options": ["先看状态接续", "换一个方向"],
+                                    "citations": ["pr:Owner/Repo#3", "fabricated", "pr:Owner/Repo#3"]}, "c2"))
+    db = tmp_path / "sessions.db"
+    store, service, session = make(model, ChatStore(db_path=db))
+    monkeypatch.setattr("src.chat.runtime.read_pr", lambda *a: {"title": "state", "url": "https://github.com/Owner/Repo/pull/3"})
+    paused = send(store, service, session, "帮我准备有依据的新方向")
+    assert paused.status == "waiting_for_user"
+    assert paused.messages[-1].citations == ["pr:Owner/Repo#3"]
+    assert ChatStore(db_path=db).get(session.session_id).pending_question.citations == ["pr:Owner/Repo#3"]
+
 def test_plain_chat_answers_pending_and_cancel_releases_it():
     model = Model(tool("ask_user", {"question":"版本？"}), reply("继续"), tool("ask_user", {"question":"环境？"}, "c2"))
     store, service, session = make(model)

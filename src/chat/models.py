@@ -154,6 +154,7 @@ class PendingQuestion(BaseModel):
     call_id: str
     question: str
     options: list[str] = Field(default_factory=list)
+    citations: list[str] = Field(default_factory=list)
     turn_id: str
 
 
