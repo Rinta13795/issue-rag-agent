@@ -23,7 +23,7 @@
 - `api.py:206-277` 有仓库同步、会话与发消息接口，没有 Issue 草稿或发布接口。
 - `frontend/src/components/ChatWorkspace.tsx` 显示对话和候选，暂无可编辑草稿、确认发布和发布结果状态。
 - `tests/test_chat_service.py` 用 FakeLLM/FakeRetriever 覆盖离线会话行为；新测试应沿用替身模式，不能依赖真实 GitHub 或真实模型。
-- 项目约定见 `CLAUDE.md`：Python/FastAPI，聊天类型集中在 `src/chat/models.py`，关键步骤有中文注释，测试命令为 `python3 -m pytest tests/ -q`。前端命令见 `frontend/package.json`：`npm run lint`、`npm run build`。
+- 项目现行约定见 `AGENTS.md`：Python/FastAPI，聊天类型集中在 `src/chat/models.py`，关键步骤有中文注释，测试命令为 `python3 -m pytest tests/ -q`。前端命令见 `frontend/package.json`：`npm run lint`、`npm run build`。
 - 前端视觉应遵守 `/Users/chenyuhang/Desktop/ai-style/设计风格手册.md`：纸面与墨色层级、1px hairline、5px 圆角、赭橘只用于微型标记/交互反馈；产出前逐项核对第五节反面清单。
 
 ## 产品行为：三种意图，不混为一谈
