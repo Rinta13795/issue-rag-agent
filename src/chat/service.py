@@ -189,7 +189,6 @@ class ChatService:
             "session_id": session_id,
             "message_id": current_user.id,
             "repository_id": snapshot.repository_id,
-            "workspace_id": snapshot.workspace_id,
             "case_id": snapshot.memory_case_id,
             "investigation_summary": snapshot.investigation_summary,
             "current_tool_evidence_ids": [step.result.get("evidence_id") for step in snapshot.runtime_steps

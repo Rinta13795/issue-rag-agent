@@ -152,9 +152,9 @@ python -m scripts.sync_openharness_issues
 
 ## 接口与集成
 
-新对话选择“读取本地项目”，无需建立 Issue 索引，即可检查源码、搜索调用位置和读取测试。默认可选项目为服务所在的仓库；其他项目由服务器的 `ISSUE_AGENT_WORKSPACES` 配置。已有对话也可展开“连接本地项目”入口。读取默认为只读；勾选“允许修改并运行检查”后，用户要求修复时，Agent 可以使用版本校验的片段替换工具，并执行固定测试、构建或 lint。过程展示实际 diff 和检查退出码。完整范围与配置见 [源码调查工具](docs/code-tools.md)。
+直接在原来的对话中让 Agent 读取代码：给出本地项目路径、GitHub 仓库名或链接即可。代码工具只读，不需要新增项目入口、连接操作或修改开关；公开参考仓库无需建立 Issue 索引，也不局限于当前选择的资料仓库。完整范围见 [源码读取工具](docs/code-tools.md)。
 
-源码工作台只接受本机访问。文件工具限定已连接项目，不开放任意 shell、自动提交或推送；项目检查是本机执行可信测试代码，不是操作系统沙箱。
+对话接口只接受本机访问。本地代码工具限定每次指定的项目目录，排除凭据、软链接和内部状态；不提供源码写入或命令执行工具。
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
@@ -167,8 +167,6 @@ python -m scripts.sync_openharness_issues
 | GET | `/api/system` | 查询演示元数据与索引存在状态 |
 | GET | `/api/evaluation/summary` | 读取本地评测结果 |
 | GET | `/api/chat/repositories` | 列出本地已索引仓库 |
-| GET | `/api/chat/workspaces` | 列出服务端配置的源码项目 |
-| PATCH | `/api/chat/sessions/{session_id}/workspace` | 连接源码项目并设置本会话修改权限 |
 | POST | `/api/chat/repositories/sync` | 按需同步公开 GitHub 仓库，返回后台任务 |
 | GET | `/api/chat/repositories/sync/{job_id}` | 查询同步进度与结果 |
 | GET | `/api/chat/sessions` | 列出本地对话 |

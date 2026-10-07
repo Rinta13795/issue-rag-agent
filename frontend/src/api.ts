@@ -1,25 +1,6 @@
 import type { ChatRepository, ChatSession, ChatSessionSummary, MemoryCase, MemoryRecord, SourceIssue, SyncRepositoryStatus, EvaluationSummary, ExampleItem, RunSnapshot, SystemInfo } from './types'
 
 const API_BASE = ''
-import type { CodeWorkspace } from './types'
-
-export async function listCodeWorkspaces(): Promise<CodeWorkspace[]> {
-  return chatJson(await fetch(`${API_BASE}/api/chat/workspaces`))
-}
-
-export async function connectCodeWorkspace(sessionId: string, workspaceId: string | null, allowEdits: boolean): Promise<ChatSession> {
-  return chatJson(await fetch(`${API_BASE}/api/chat/sessions/${encodeURIComponent(sessionId)}/workspace`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workspace_id: workspaceId, allow_edits: allowEdits }),
-  }))
-}
-
-export async function createCodeSession(workspaceId: string, caseId?: string): Promise<ChatSession> {
-  return chatJson(await fetch(`${API_BASE}/api/chat/sessions`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repository_id: `code-${workspaceId}`, workspace_id: workspaceId, case_id: caseId || null }),
-  }))
-}
 
 export class ChatApiError extends Error {
   readonly status: number

@@ -8,7 +8,7 @@ MEMORY_INPUT_CHAR_BUDGET = 16000
 
 def memory_prompt_payload(payload):
     result = {key: deepcopy(payload.get(key)) for key in (
-        'session_id', 'message_id', 'repository_id', 'workspace_id', 'case_id', 'investigation_summary',
+        'session_id', 'message_id', 'repository_id', 'case_id', 'investigation_summary',
         'user_messages', 'assistant_message', 'source_issue', 'candidates',
     )}
     result['investigation_summary'] = str(result.get('investigation_summary') or '')[:1200]
