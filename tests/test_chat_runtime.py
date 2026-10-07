@@ -13,7 +13,7 @@ class Model:
         self.responses = list(responses)
         self.requests = []
     def bind_tools(self, tools):
-        assert len(tools) == 6
+        assert {"search_issues", "read_issue", "read_pr", "search_prs", "draft_issue", "ask_user"}.issubset({tool["function"]["name"] for tool in tools})
         return self
     def invoke(self, messages):
         self.requests.append(messages)

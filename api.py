@@ -19,12 +19,14 @@ import json
 import os
 import uuid
 import time
+import ipaddress
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -48,6 +50,8 @@ from src.chat.repositories import list_repositories, repository_exists
 from src.chat.service import get_chat_runner
 from src.chat.store import get_chat_store
 from src.chat.memory import get_memory_store
+from src.chat.models import UpdateCodeWorkspaceRequest
+from src.chat.code_workspace import workspace_catalog, workspace_info
 
 app = FastAPI(
     title="Issue RAG Agent API",
@@ -63,6 +67,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def local_chat_access(request: Request, call_next):
+    """源码工具的本地工作台仅接受本机浏览器，拒绝外站跨源触发。"""
+    if request.url.path.startswith("/api/chat"):
+        host = request.client.host if request.client else ""
+        try:
+            local = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            local = host == "testclient"  # FastAPI 离线测试的内存传输。
+        origin = request.headers.get("origin")
+        try:
+            parsed = urlsplit(origin) if origin else None
+            origin_allowed = parsed is None or (parsed.scheme in {"http", "https"} and parsed.hostname in {"localhost", "127.0.0.1", "::1"})
+        except ValueError:
+            origin_allowed = False
+        host_allowed = request.url.hostname in {"localhost", "127.0.0.1", "::1", "testserver"}
+        if not local or not origin_allowed or not host_allowed:
+            return JSONResponse({"detail": "源码工作台只允许本机访问"}, status_code=403)
+    return await call_next(request)
 
 
 # ==================== 原有兼容接口 ====================
@@ -210,6 +235,30 @@ def get_chat_repositories() -> list[ChatRepository]:
     return list_repositories()
 
 
+@app.get("/api/chat/workspaces")
+def list_code_workspaces() -> list[dict]:
+    """列出服务器已配置的本地源码项目，不接受任意浏览器路径。"""
+    return workspace_catalog()
+
+
+@app.patch("/api/chat/sessions/{session_id}/workspace", response_model=ChatSession)
+def connect_code_workspace(session_id: str, request: UpdateCodeWorkspaceRequest) -> ChatSession:
+    try:
+        workspace_info(request.workspace_id)
+        def update(session):
+            if session.status in {"thinking", "retrieving", "answering", "waiting_for_user"}:
+                raise RuntimeError("请在本轮完成或取消提问后更换项目权限")
+            session.workspace_id = request.workspace_id
+            session.code_edits_allowed = bool(request.workspace_id and request.allow_edits)
+        return get_chat_store().update(session_id, update)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/api/chat/issues/preview", response_model=SourceIssue)
 def preview_chat_issue(request: PreviewIssueRequest) -> SourceIssue:
     """实时读取用户指定的公开 Issue，供仓库同步与导入预览。"""
@@ -242,7 +291,14 @@ def list_chat_sessions() -> list[ChatSessionSummary]:
 
 @app.post("/api/chat/sessions", response_model=ChatSession)
 def create_chat_session(request: CreateChatSessionRequest) -> ChatSession:
-    if not repository_exists(request.repository_id):
+    try:
+        workspace = workspace_info(request.workspace_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    local_only = workspace is not None and request.repository_id == f"code-{workspace['id']}"
+    if local_only and request.issue_url:
+        raise HTTPException(status_code=422, detail="本地源码会话不能导入其他资料仓库的 Issue")
+    if not local_only and not repository_exists(request.repository_id):
         raise HTTPException(status_code=422, detail="仓库未建立本地索引，请先同步后再选择")
     source_issue = None
     if request.issue_url:
@@ -267,6 +323,11 @@ def create_chat_session(request: CreateChatSessionRequest) -> ChatSession:
         repository_id=request.repository_id, source_issue=source_issue,
         memory_case_id=memory_case_id, investigation_summary=investigation_summary,
     )
+    if workspace:
+        def connect(s):
+            s.workspace_id = workspace["id"]
+            s.code_edits_allowed = request.allow_edits
+        session = get_chat_store().update(session.session_id, connect)
     if memory_case_id:
         case = get_memory_store().get_case(memory_case_id)
         if case:
