@@ -63,7 +63,7 @@
 - `[config.py](../config.py)`
 - `[requirements.txt](../requirements.txt)`
 - `[.gitignore](../.gitignore)`
-- `[CLAUDE.md](../CLAUDE.md)`
+- `[AGENTS.md](../AGENTS.md)`
 - `[step_notes/](../step_notes/)`
 
 
@@ -88,7 +88,7 @@ README 的能力描述
 → config.py 的实际参数
 → requirements.txt 的声明依赖
 → .gitignore 判断哪些运行条件没有随仓库分发
-→ CLAUDE.md / step_notes 只作为历史设计记录
+→ AGENTS.md 提供当前协作约定，step_notes 提供历史设计记录
 ```
 
 
@@ -99,7 +99,7 @@ README 的能力描述
 2. 当前 `config.py` 相对 `HEAD` 有哪些未提交变化？
 3. 哪些目录存在于本机，但干净 clone 不会得到？
 4. `requirements.txt` 锁定了精确版本和 Python 版本吗？
-5. `CLAUDE.md` 和 `step_notes` 中哪些句子是约定或计划，而不是执行逻辑？
+5. `AGENTS.md` 和 `step_notes` 中哪些句子是约定或计划，而不是执行逻辑？
 
 
 

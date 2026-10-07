@@ -76,7 +76,7 @@ def normalize(raw_issue: dict[str, Any]) -> dict[str, Any]:
     created_at = _get_first(raw_issue, ["created_at", "createdAt", "created"], "")
     
     #前面逻辑先把所有数值取出来，后面统一issue格式
-    # 返回 CLAUDE.md 约定的标准 issue 格式，不在 normalize 阶段做清洗或过滤。
+    # 返回项目统一的标准 issue 格式，不在 normalize 阶段做清洗或过滤。
     return {
         "id": str(issue_id),
         "title": str(title),
