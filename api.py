@@ -50,8 +50,6 @@ from src.chat.repositories import list_repositories, repository_exists
 from src.chat.service import get_chat_runner
 from src.chat.store import get_chat_store
 from src.chat.memory import get_memory_store
-from src.chat.models import UpdateCodeWorkspaceRequest
-from src.chat.code_workspace import workspace_catalog, workspace_info
 
 app = FastAPI(
     title="Issue RAG Agent API",
@@ -235,30 +233,6 @@ def get_chat_repositories() -> list[ChatRepository]:
     return list_repositories()
 
 
-@app.get("/api/chat/workspaces")
-def list_code_workspaces() -> list[dict]:
-    """列出服务器已配置的本地源码项目，不接受任意浏览器路径。"""
-    return workspace_catalog()
-
-
-@app.patch("/api/chat/sessions/{session_id}/workspace", response_model=ChatSession)
-def connect_code_workspace(session_id: str, request: UpdateCodeWorkspaceRequest) -> ChatSession:
-    try:
-        workspace_info(request.workspace_id)
-        def update(session):
-            if session.status in {"thinking", "retrieving", "answering", "waiting_for_user"}:
-                raise RuntimeError("请在本轮完成或取消提问后更换项目权限")
-            session.workspace_id = request.workspace_id
-            session.code_edits_allowed = bool(request.workspace_id and request.allow_edits)
-        return get_chat_store().update(session_id, update)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="会话不存在或已过期") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
 @app.post("/api/chat/issues/preview", response_model=SourceIssue)
 def preview_chat_issue(request: PreviewIssueRequest) -> SourceIssue:
     """实时读取用户指定的公开 Issue，供仓库同步与导入预览。"""
@@ -291,14 +265,9 @@ def list_chat_sessions() -> list[ChatSessionSummary]:
 
 @app.post("/api/chat/sessions", response_model=ChatSession)
 def create_chat_session(request: CreateChatSessionRequest) -> ChatSession:
-    try:
-        workspace = workspace_info(request.workspace_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    local_only = workspace is not None and request.repository_id == f"code-{workspace['id']}"
-    if local_only and request.issue_url:
-        raise HTTPException(status_code=422, detail="本地源码会话不能导入其他资料仓库的 Issue")
-    if not local_only and not repository_exists(request.repository_id):
+    # 允许继续 PR #20 创建的旧本地案例，但不再提供连接项目入口。
+    legacy_case = get_memory_store().get_case(request.case_id) if request.case_id and request.repository_id.startswith("code-") else None
+    if not repository_exists(request.repository_id) and not (legacy_case and legacy_case.repository_id == request.repository_id):
         raise HTTPException(status_code=422, detail="仓库未建立本地索引，请先同步后再选择")
     source_issue = None
     if request.issue_url:
@@ -323,11 +292,6 @@ def create_chat_session(request: CreateChatSessionRequest) -> ChatSession:
         repository_id=request.repository_id, source_issue=source_issue,
         memory_case_id=memory_case_id, investigation_summary=investigation_summary,
     )
-    if workspace:
-        def connect(s):
-            s.workspace_id = workspace["id"]
-            s.code_edits_allowed = request.allow_edits
-        session = get_chat_store().update(session.session_id, connect)
     if memory_case_id:
         case = get_memory_store().get_case(memory_case_id)
         if case:

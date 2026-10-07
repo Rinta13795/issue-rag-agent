@@ -1,78 +1,103 @@
-"""从工具调用到文件修改、检查和可审阅结果的离线集成测试。"""
+"""普通对话直接读取本地与任意公开仓库，保持只读。"""
+import base64
 import json
-
+import pytest
 from langchain_core.messages import AIMessage, ToolMessage
-
-from src.chat.code_workspace import workspace_catalog
 from src.chat.memory import MemoryStore
-from src.chat.models import ChatRepository
-from src.chat.runtime import InvestigationRuntime
+from src.chat.models import SourceIssue
+from src.chat.runtime import InvestigationRuntime, DEFINITIONS
 from src.chat.service import ChatService
 from src.chat.store import ChatStore
 
-
 class Model:
-    def __init__(self, root):
-        self.root, self.turn, self.tools = root, 0, []
-
+    def __init__(self, calls):
+        self.calls, self.turn, self.tools = calls, 0, []
     def bind_tools(self, tools):
         self.tools = [tool["function"]["name"] for tool in tools]
+        assert "edit_project_file" not in self.tools and "run_project_checks" not in self.tools
         return self
-
     def invoke(self, messages):
-        self.turn += 1
-        if self.turn == 1:
-            name, args = "read_project_file", {"path": "main.py"}
-        elif self.turn == 2:
-            read = json.loads(next(m.content for m in reversed(messages) if isinstance(m, ToolMessage)))["data"]
-            name, args = "edit_project_file", {"path": "main.py", "old_text": "value = 1", "new_text": "value = 2", "expected_sha256": read["sha256"]}
-        elif self.turn == 3:
-            name, args = "read_project_file", {"path": "main.py"}
-        elif self.turn == 4:
-            latest = json.loads(next(m.content for m in reversed(messages) if isinstance(m, ToolMessage)))["data"]
-            assert "value = 2" in latest["content"]  # 修改后同参数读取不可使用旧缓存。
-            name, args = "run_project_checks", {"check": "python-tests"}
-        else:
-            results = [json.loads(m.content) for m in messages if isinstance(m, ToolMessage)]
-            assert results[-1]["data"]["exit_code"] == 0
-            return AIMessage(content=json.dumps({"answer": "已修改并通过检查", "citations": [r["evidence_id"] for r in results]}))
-        return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": f"c{self.turn}", "type": "tool_call"}])
+        if self.turn < len(self.calls):
+            name, args = self.calls[self.turn]
+            self.turn += 1
+            return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": f"c{self.turn}", "type": "tool_call"}])
+        results = [json.loads(m.content) for m in messages if isinstance(m, ToolMessage)]
+        assert all("error" not in result for result in results)
+        return AIMessage(content=json.dumps({"answer": "已读取源码", "citations": [r["evidence_id"] for r in results]}))
 
-
-def test_read_edit_reread_check_and_persisted_evidence(tmp_path, monkeypatch):
-    monkeypatch.setenv("ISSUE_AGENT_WORKSPACES", json.dumps([str(tmp_path)]))
-    (tmp_path / "main.py").write_text("value = 1\n")
-    workspace_id = workspace_catalog()[0]["id"]
-    store = ChatStore(db_path=tmp_path / "sessions.db")
-    session = store.create(f"code-{workspace_id}")
-    store.update(session.session_id, lambda s: (setattr(s, "workspace_id", workspace_id), setattr(s, "code_edits_allowed", True)))
-    model = Model(tmp_path)
-    monkeypatch.setattr("src.chat.runtime.CodeWorkspace.run_checks", lambda self, **kwargs: {"exit_code": 0, "output": "1 passed", "timed_out": False})
-    service = ChatService(store=store, answer_llm=model, memory_store=MemoryStore())
-    message_id, _ = store.add_user_message(session.session_id, "把 value 改为 2 并检查", "one")
+def run(model, store, session, text):
+    memory = MemoryStore()
+    memory.set_auto_capture(False)
+    service = ChatService(store=store, answer_llm=model, memory_store=memory,
+        retrieval_provider=lambda *_: pytest.fail("代码读取不应要求 Issue 索引"))
+    message_id, _ = store.add_user_message(session.session_id, text, "one")
     service.process_turn(session.session_id, message_id)
-    result = store.get(session.session_id)
-    assert result.status == "completed" and model.turn == 5
-    assert (tmp_path / "main.py").read_text() == "value = 2\n"
-    assert [e.kind for e in result.evidence] == ["code", "change", "code", "check"]
-    assert "edit_project_file" in model.tools and "run_project_checks" in model.tools
+    assert store.get(session.session_id).status == "completed"
+    return store.get(session.session_id)
+
+def test_normal_session_reads_local_paths_without_connection(tmp_path):
+    roots = []
+    for name in ["mine", "reference"]:
+        root = tmp_path / name
+        root.mkdir()
+        (root / "main.py").write_text(f"value = '{name}'\n")
+        roots.append(root)
+    store = ChatStore(db_path=tmp_path / "sessions.db")
+    session = store.create("existing-issue-repository")
+    model = Model([("list_project_files", {"project_path": str(roots[0])}),
+                   *[("read_project_file", {"project_path": str(root), "path": "main.py"}) for root in roots]])
+    result = run(model, store, session, "读取这两个本地项目")
+    assert [item.kind for item in result.evidence] == ["code", "code", "code"]
+    assert result.evidence[-1].metadata["project_path"] == str(roots[1])
+    assert "reference" in result.evidence[-1].text
+    assert all(root.joinpath("main.py").read_text() == f"value = '{root.name}'\n" for root in roots)
     restored = ChatStore(db_path=tmp_path / "sessions.db").get(session.session_id)
-    assert restored.workspace_id == workspace_id and restored.code_edits_allowed
-    assert restored.memory_case_id
-    assert restored.runtime_steps[1].result["data"]["diff"].endswith("+value = 2\n")
+    assert restored.memory_case_id and len(restored.evidence) == 3
+    assert "workspace_id" not in restored.model_dump()
 
-
-def test_readonly_tool_rejected_even_if_model_calls_it(tmp_path, monkeypatch):
-    monkeypatch.setenv("ISSUE_AGENT_WORKSPACES", json.dumps([str(tmp_path)]))
+def test_default_local_source_needs_no_connection(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.chat.code_workspace.PROJECT_ROOT", tmp_path)
+    (tmp_path / "main.py").write_text("default = True\n")
     store = ChatStore()
-    session = store.create("code-local")
-    store.update(session.session_id, lambda s: setattr(s, "workspace_id", workspace_catalog()[0]["id"]))
-    runtime = InvestigationRuntime(ChatService(store=store))
-    import pytest
-    with pytest.raises(ValueError, match="只读"):
-        runtime.execute(session.session_id, "edit_project_file", {"path": "new.py", "old_text": "", "new_text": "value = 2", "expected_sha256": "missing"})
-    assert not (tmp_path / "new.py").exists()
+    session = store.create("existing")
+    result = run(Model([("read_project_file", {"path": "main.py"})]), store, session, "读当前本地项目")
+    assert "default = True" in result.evidence[-1].text
 
+def test_current_and_other_public_repos_read_without_index(monkeypatch):
+    sha = "a" * 40
+    urls = []
+    def response(url):
+        urls.append(url)
+        if "/commits/" in url:
+            return {"sha": sha, "commit": {"tree": {"sha": "b" * 40}}}
+        if "/git/trees/" in url:
+            return {"tree": [{"type": "blob", "path": "src/main.py"}]}
+        if "/contents/" in url:
+            return {"type": "file", "encoding": "base64", "size": 16, "content": base64.b64encode(b"source = True\n").decode()}
+        return {"private": False, "default_branch": "main"}
+    monkeypatch.setattr("src.chat.code_research._request_json", response)
+    store = ChatStore()
+    source = SourceIssue(repository="current/project", number=1, title="当前问题", body="test", state="open", url="https://github.com/current/project/issues/1")
+    session = store.create("current", source_issue=source)
+    store.update(session.session_id, lambda s: setattr(s, "focus_candidate_id", "current:1"))
+    model = Model([("read_repository_tree", {}), ("read_repository_file", {"path": "src/main.py", "ref": sha}),
+                   ("read_repository_tree", {"repository": "https://github.com/someone/other"}),
+                   ("read_repository_file", {"repository": "someone/other", "path": "src/main.py", "ref": sha})])
+    result = run(model, store, session, "读当前项目，再参考别人的源码")
+    assert any("/repos/current/project/contents/" in url for url in urls)
+    assert any("/repos/someone/other/contents/" in url for url in urls)
+    assert result.repository_id == "current" and result.focus_candidate_id == "current:1"
+    assert result.evidence[-1].metadata["source_repository"] == "someone/other"
+
+def test_removed_write_tools_cannot_execute_even_for_old_session(tmp_path):
+    store = ChatStore()
+    session = store.create("existing")
+    runtime = InvestigationRuntime(ChatService(store=store))
+    for name in ["edit_project_file", "run_project_checks"]:
+        assert name not in DEFINITIONS
+        with pytest.raises(ValueError, match="未知工具"):
+            runtime.execute(session.session_id, name, {"path": "new.py", "new_text": "x"})
+    assert not (tmp_path / "new.py").exists()
 
 def test_external_pr_keeps_current_focus_and_source_identity(monkeypatch):
     store = ChatStore()

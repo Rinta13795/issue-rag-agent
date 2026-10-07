@@ -209,8 +209,6 @@ export interface ChatMessage {
 }
 
 export interface ChatSession {
-  workspace_id: string | null
-  code_edits_allowed: boolean
   streaming_answer: string
   streaming_turn_id: string | null
   session_id: string
@@ -244,12 +242,6 @@ export interface ChatSession {
   cache_reported_input_tokens: number
   last_elapsed_ms: number | null
   last_error: string | null
-}
-
-export interface CodeWorkspace {
-  id: string
-  name: string
-  path: string
 }
 
 export interface ChatSessionSummary {

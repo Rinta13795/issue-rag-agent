@@ -4,14 +4,10 @@ import remarkGfm from 'remark-gfm'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { answerChatQuestion, ChatApiError, confirmMemory, createChatSession, createIssueDraft, deleteMemory, editIssueDraft, getChatSession, getMemorySettings, getRepositorySync, listChatRepositories, listChatSessions, listenChatEvents, listMemories, listMemoryCases, previewChatIssue, proposeMemory, publishIssueDraft, retryChatMessage, sendChatMessage, syncChatRepository, updateMemory, updateMemorySettings } from '../api'
 import type { ChatRepository, ChatSession, ChatSessionSummary, MemoryCase, MemoryRecord } from '../types'
-import type { CodeWorkspace } from '../types'
-import { listCodeWorkspaces, connectCodeWorkspace, createCodeSession } from '../api'
 
-const toolLabels: Record<string, string> = {
-  search_issues: '搜索 Issue', read_issue: '读取 Issue 与关联 PR', read_pr: '读取 PR', search_prs: '搜索相似 PR',
-  ask_user: '等待补充', draft_issue: '起草 Issue', list_project_files: '查看项目文件', search_project_code: '搜索源码',
-  read_project_file: '读取源码', edit_project_file: '修改文件', run_project_checks: '运行项目检查',
-  search_reference_repositories: '寻找参考项目', read_repository_tree: '查看参考项目文件', read_repository_file: '读取参考源码',
+const codeToolLabels: Record<string, string> = {
+  list_project_files: '查看代码文件', search_project_code: '搜索本地源码', read_project_file: '读取本地源码',
+  search_reference_repositories: '寻找参考仓库', read_repository_tree: '查看仓库代码文件', read_repository_file: '读取仓库源码',
 }
 
 // Older sessions can contain a JSON envelope mixed with prose or Markdown fences.
@@ -51,15 +47,6 @@ function AnswerMarkdown({ content }: { content: string }) {
               h5: ({ children }) => <div role="heading" aria-level={5} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
               h6: ({ children }) => <div role="heading" aria-level={6} className="block-label chat-markdown-heading"><span className="cn">{children}</span><span className="en">NOTE</span></div>,
             }}>{content}</Markdown></div>
-}
-
-function ToolResultDetails({ result }: { result: Record<string, unknown> }) {
-  const data = result.data && typeof result.data === 'object' ? result.data as Record<string, unknown> : {}
-  return <>
-    {typeof data.diff === 'string' && <AnswerMarkdown content={`\`\`\`diff\n${data.diff}\n\`\`\``} />}
-    {typeof data.output === 'string' && <AnswerMarkdown content={`\`\`\`text\n${data.output}\n\`\`\`\n退出码：${data.exit_code}${data.timed_out ? ' · 超时' : ''}`} />}
-    {typeof result.error === 'string' && <p>{result.error}</p>}
-  </>
 }
 
 const STORAGE_KEY = 'issue-rag-local-chat-session'
@@ -145,13 +132,10 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
   const [session, setSession] = useState<ChatSession | null>(null)
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([])
   const [repositories, setRepositories] = useState<ChatRepository[]>([])
-  const [workspaces, setWorkspaces] = useState<CodeWorkspace[]>([])
-  const [selectedWorkspace, setSelectedWorkspace] = useState('')
-  const [workspaceSaving, setWorkspaceSaving] = useState(false)
   const [selectedRepository, setSelectedRepository] = useState('')
   const [githubRepository, setGithubRepository] = useState('')
   const [issueLink, setIssueLink] = useState('')
-  const [entryMode, setEntryMode] = useState<'repository' | 'issue' | 'project'>('repository')
+  const [entryMode, setEntryMode] = useState<'repository' | 'issue'>('repository')
   const [syncStatus, setSyncStatus] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [issueTitle, setIssueTitle] = useState('')
@@ -199,9 +183,6 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
         const [available, history] = await Promise.all([listChatRepositories(), listChatSessions()])
         setRepositories(available)
         setSessions(history)
-        const projects = await listCodeWorkspaces()
-        setWorkspaces(projects)
-        setSelectedWorkspace(projects[0]?.id || '')
         if (savedId) {
           const restored = await getChatSession(savedId)
           if (selectionEpochRef.current === loadEpoch && window.localStorage.getItem(STORAGE_KEY) === savedId) setSession(restored)
@@ -337,37 +318,6 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '暂时无法创建会话')
     }
-  }
-
-  const startCodeSession = async () => {
-    if (!selectedWorkspace) { setError('请先选择本地项目。'); return }
-    const epoch = ++selectionEpochRef.current
-    setWorkspaceSaving(true)
-    try {
-      const created = await createCodeSession(selectedWorkspace)
-      if (epoch !== selectionEpochRef.current) return
-      window.localStorage.setItem(STORAGE_KEY, created.session_id)
-      setSession(created)
-      setError(null)
-      setNotice('项目已连接，可以直接让 Agent 读代码。')
-      await refreshSessions()
-    } catch (caught) { setError(caught instanceof Error ? caught.message : '无法连接项目') }
-    finally { setWorkspaceSaving(false) }
-  }
-
-  const changeWorkspace = async (workspaceId: string | null, allowEdits: boolean) => {
-    if (!session) return
-    const id = session.session_id
-    const epoch = selectionEpochRef.current
-    setWorkspaceSaving(true)
-    try {
-      const updated = await connectCodeWorkspace(id, workspaceId, allowEdits)
-      if (epoch === selectionEpochRef.current) {
-        setSession(updated)
-        setError(null)
-      }
-    } catch (caught) { setError(caught instanceof Error ? caught.message : '无法更新项目权限') }
-    finally { setWorkspaceSaving(false) }
   }
 
   const importIssue = async () => {
@@ -598,8 +548,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
 
   const continueCase = async (item: MemoryCase) => {
     try {
-      const workspace = workspaces.find((candidate) => `code-${candidate.id}` === item.repository_id)
-      const created = workspace ? await createCodeSession(workspace.id, item.case_id) : await createChatSession(item.repository_id, undefined, item.case_id)
+      const created = await createChatSession(item.repository_id, undefined, item.case_id)
       selectionEpochRef.current += 1
       window.localStorage.setItem(STORAGE_KEY, created.session_id)
       setSession(created)
@@ -609,31 +558,14 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
     } catch (caught) { setError(caught instanceof Error ? caught.message : '无法继续该案例') }
   }
 
-  const busy = isSending || workspaceSaving || Boolean(session && activeStates.has(session.status))
+  const busy = isSending || Boolean(session && activeStates.has(session.status))
   const currentTurn = [...(session?.messages || [])].reverse().find((message) => message.role === 'user')?.id
   const runningTool = [...(session?.runtime_steps || [])].reverse().find((step) => step.turn_id === currentTurn && step.status === 'running')
   const progressLabel = runningTool
-    ? `正在${toolLabels[runningTool.tool] || '读取调查资料'}`
+    ? (codeToolLabels[runningTool.tool] ? `正在${codeToolLabels[runningTool.tool]}` : ({ search_issues: '正在搜索 Issue', read_issue: '正在读取 Issue 与关联 PR', read_pr: '正在读取 PR', search_prs: '正在搜索相似 PR', draft_issue: '正在起草 Issue' } as Record<string, string>)[runningTool.tool] || '正在读取调查资料')
     : statusLabels[session?.status || ''] || '正在发送'
 
   const activeRepository = repositories.find((repo) => repo.id === session?.repository_id)
-  const hasConversation = Boolean(session?.messages.length || session?.source_issue) || busy
-  const activeWorkspace = workspaces.find((workspace) => workspace.id === session?.workspace_id)
-  const repositoryName = activeRepository?.label || (session?.repository_id?.startsWith('code-')
-    ? workspaces.find((workspace) => `code-${workspace.id}` === session.repository_id)?.name || '本地项目' : '旧会话')
-  const workspaceControls = session && <details className="chat-existing-repositories chat-code-workspace" open={!hasConversation}>
-    <summary>{activeWorkspace ? `本地项目：${activeWorkspace.name} · ${session.code_edits_allowed ? '可修改并运行检查' : '只读'}` : '连接本地项目，让 Agent 直接读代码'}</summary>
-    <label className="field-label" htmlFor="chat-code-workspace">本地源码项目</label>
-    <select id="chat-code-workspace" value={session.workspace_id || ''} disabled={busy || Boolean(session.pending_question)} onChange={(event) => void changeWorkspace(event.target.value || null, false)}>
-      <option value="">未连接</option>
-      {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-    </select>
-    {activeWorkspace && <>
-      <p className="chat-entry-note">{activeWorkspace.path}</p>
-      <label className="chat-publish-check"><input type="checkbox" checked={session.code_edits_allowed} disabled={busy || Boolean(session.pending_question)} onChange={(event) => void changeWorkspace(session.workspace_id, event.target.checked)} />允许修改并运行检查</label>
-      <p className="chat-entry-note">读取和搜索可直接进行。开启后，你要求修复时，Agent 可以修改项目文件并执行测试或构建。</p>
-    </>}
-  </details>
   const issueUrl = (id: string): string | null => {
     const evidenceUrl = session?.evidence?.find((item) => item.id === id)?.url
     if (evidenceUrl) return evidenceUrl
@@ -642,6 +574,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
   }
   const canSendDraft = Boolean(draft.trim() && draft.trim() !== '报错原文：')
   const issueDraftDirty = Boolean(session?.issue_draft && (issueTitle !== session.issue_draft.title || issueBody !== session.issue_draft.body))
+  const hasConversation = Boolean(session?.messages.length || session?.source_issue) || busy
   const canSearchHistory = Boolean(session?.messages.some((message) =>
     message.role === 'user' && /error|exception|traceback|fail|crash|报错|失败|崩溃|卡住|无法|不能|不了/i.test(message.content),
   ))
@@ -661,7 +594,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
     <div className="chat-composer-foot"><span>Enter 发送 · Shift + Enter 换行</span><button type="button" className="btn btn--primary" disabled={!session || busy || !canSendDraft} onClick={() => void send()}>发送消息</button></div>
   </div>
 
-  const repositoryLabel = (repositoryId: string | null | undefined) => repositories.find((repo) => repo.id === repositoryId)?.label || workspaces.find((workspace) => `code-${workspace.id}` === repositoryId)?.name || repositoryId || '旧会话 · 未绑定仓库'
+  const repositoryLabel = (repositoryId: string | null | undefined) => repositories.find((repo) => repo.id === repositoryId)?.label || repositoryId || '旧会话 · 未绑定仓库'
   const search = historySearch.trim().toLocaleLowerCase()
   const visibleSessions = sessions.filter((item) => !search || `${item.title} ${repositoryLabel(item.repository_id)}`.toLocaleLowerCase().includes(search))
   const sidebarHidden = isMobile ? !mobileHistoryOpen : sidebarCollapsed
@@ -704,23 +637,14 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
     {!hasConversation && <section className="chat-home" aria-label="开始对话">
       <div className="masthead-pre">ISSUE TRIAGE / CONVERSATION</div>
       <h1 className="masthead-title">从一个问题开始<span className="dot">。</span></h1>
-      <p className="masthead-sub">连接本地项目或选择资料仓库；Agent 会读代码、查 Issue 和 PR，寻找可借鉴的做法。</p>
+      <p className="masthead-sub">选择仓库，描述问题；Agent 会查找相关 Issue、PR，陪你继续排查。</p>
       {!session && <div className="chat-repository-picker">
         <div className="chat-entry-modes" aria-label="选择一种开始方式">
           <button type="button" className="btn" aria-pressed={entryMode === 'repository'} disabled={Boolean(syncStatus)} onClick={() => { setEntryMode('repository'); setError(null) }}>从仓库开始</button>
           <button type="button" className="btn" aria-pressed={entryMode === 'issue'} disabled={Boolean(syncStatus)} onClick={() => { setEntryMode('issue'); setError(null) }}>导入具体 Issue</button>
-          <button type="button" className="btn" aria-pressed={entryMode === 'project'} disabled={Boolean(syncStatus)} onClick={() => { setEntryMode('project'); setError(null) }}>读取本地项目</button>
         </div>
         <p className="chat-entry-note">选择一种即可。导入具体 Issue 时，也会自动准备它所属的仓库。</p>
-        {entryMode === 'project' ? <div className="chat-repository-add">
-          <label className="field-label" htmlFor="chat-new-code-project">选择本地项目</label>
-          <select id="chat-new-code-project" value={selectedWorkspace} disabled={workspaceSaving} onChange={(event) => setSelectedWorkspace(event.target.value)}>
-            <option value="">请选择项目</option>
-            {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-          </select>
-          <p className="chat-entry-note">无需准备 Issue 索引，也无需粘贴源码。连接后可以直接调查项目，再寻找公开参考。</p>
-          <button type="button" className="btn btn--primary" disabled={workspaceSaving || !selectedWorkspace} onClick={() => void startCodeSession()}>{workspaceSaving ? '正在连接…' : '连接并开始对话'}</button>
-        </div> : entryMode === 'issue' ? <div className="chat-repository-add">
+        {entryMode === 'issue' ? <div className="chat-repository-add">
           <label className="field-label" htmlFor="chat-issue-link">具体 Issue 链接</label>
           <input id="chat-issue-link" className="field-input" value={issueLink} disabled={Boolean(syncStatus)} onChange={(event) => setIssueLink(event.target.value)} placeholder="https://github.com/owner/repo/issues/123" aria-describedby="chat-issue-link-hint" />
           <p id="chat-issue-link-hint" className="chat-entry-note">链接末尾需要有问题编号。仓库的 /issues 列表页，请使用“从仓库开始”。</p>
@@ -744,8 +668,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
       </div>}
       {notice && <p className="chat-connection" role="status">{notice}</p>}
       {error && <div className="chat-connection-error" role="alert"><p className="chat-error">■ {error}</p><button type="button" className="btn btn--sm" onClick={startNew}>重新选择</button></div>}
-      {session && <p className="chat-connection">当前会话：{repositoryName}</p>}
-      {workspaceControls}
+      {session && <p className="chat-connection">当前仓库：{activeRepository?.label || '旧会话'} · 本地快照与 GitHub 实时搜索都限定在此仓库</p>}
       {session && composer}
       <div className="chat-home-foot">
         <span>不确定怎么描述？从一句话开始也可以。</span>
@@ -755,14 +678,13 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
 
     {hasConversation && <section className="chat-thread" aria-label="对话">
       <div className="chat-section-head">
-        <div className="block-label"><span className="cn">{repositoryName}</span><span className="en">REPO</span></div>
+        <div className="block-label"><span className="cn">{activeRepository?.label || '旧会话'}</span><span className="en">REPO</span></div>
         {sidebarHidden && <button type="button" className="btn btn--sm" onClick={startNew}>新对话</button>}
       </div>
       <div className="chat-thread-content" ref={threadScrollRef} onScroll={() => {
         const pane = threadScrollRef.current
         if (pane) followConversationRef.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 120
       }}>
-        {workspaceControls}
         {session?.source_issue && <section className="chat-source-issue" aria-label="当前源 Issue">
           <div className="block-label"><span className="cn">当前 Issue</span><span className="en">SOURCE ISSUE · #{session.source_issue.number}</span></div>
           <a className="chat-source-title" href={session.source_issue.url} target="_blank" rel="noreferrer">{session.source_issue.title} ↗</a>
@@ -781,9 +703,8 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
               {message.citations.map((id, index) => {
                 const url = issueUrl(id)
                 const number = url?.match(/\/(?:issues|pull)\/(\d+)/)?.[1]
-                const evidence = session.evidence?.find((item) => item.id === id)
-                const label = evidence?.kind === 'code' || evidence?.kind === 'change' || evidence?.kind === 'check'
-                  ? evidence.title || `代码证据 ${index + 1}` : number ? `${url?.includes('/pull/') ? 'PR' : 'Issue'} #${number}` : `资料 ${index + 1}`
+                const evidence = session.evidence.find((item) => item.id === id)
+                const label = evidence?.kind === 'code' ? evidence.title || `源码 ${index + 1}` : number ? `${url?.includes('/pull/') ? 'PR' : 'Issue'} #${number}` : `资料 ${index + 1}`
                 return <div key={id}>{url ? <a href={url} target="_blank" rel="noreferrer">{label} ↗</a> : <span>{label}（本地记录）</span>}</div>
               })}
             </details>}
@@ -808,7 +729,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
           </div>}
           {Boolean(session?.runtime_steps?.length) && <details className="chat-evidence">
             <summary>查看调查过程</summary>
-            <div className="chat-evidence-content">{session?.runtime_steps.slice(-24).map((step, index) => <details className="chat-side-note" key={`${step.call_id}-${index}`}><summary>{toolLabels[step.tool] || step.tool} · {({ completed: '完成', failed: '失败', waiting: '等待回答', running: '进行中', cancelled: '已取消' } as Record<string, string>)[step.status] || step.status}</summary><ToolResultDetails result={step.result} /></details>)}</div>
+            <div className="chat-evidence-content">{session?.runtime_steps.slice(-10).map((step, index) => <p className="chat-side-note" key={`${step.call_id}-${index}`}>{codeToolLabels[step.tool] || ({ search_issues: '搜索 Issue', read_issue: '读取 Issue 与关联 PR', read_pr: '读取 PR', search_prs: '搜索相似 PR', ask_user: '等待补充', draft_issue: '起草 Issue' } as Record<string, string>)[step.tool] || step.tool} · {({ completed: '完成', failed: '失败', waiting: '等待回答', running: '进行中', cancelled: '已取消' } as Record<string, string>)[step.status] || step.status}</p>)}</div>
           </details>}
           {busy && !session?.streaming_answer && <div className="chat-progress" role="status">{progressLabel}…</div>}
           <div ref={endRef} />
@@ -924,7 +845,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
         </section>
         <section className="block">
           <div className="block-label"><span className="cn">运行范围</span><span className="en">LOCAL SESSION</span></div>
-          <p className="chat-side-note">本对话绑定 {repositoryName}。历史 Issue 检索保留仓库范围；外部参考按需读取。{activeWorkspace && `本地源码项目为 ${activeWorkspace.name}。`}会话保留最近 7 天。</p>
+          <p className="chat-side-note">本对话绑定 {activeRepository?.label || '未指定仓库'}。先查本地快照；GitHub 仓库还会尝试实时搜索。会话保留最近 7 天，候选不能代替完整修复验证。</p>
           {session?.live_search_status === 'failed' && <p className="chat-side-note">实时搜索未完成：{session.live_search_message || 'GitHub 暂时不可用'}。不能据此认定仓库没有相关 Issue。</p>}
           <p className="chat-side-note">{session ? `模型调用 ${session.model_calls} 次 · 检索 ${session.retrieval_calls} 次` : '等待会话建立'}</p>
           {session?.last_elapsed_ms != null && <p className="chat-side-note">上一轮耗时 {session.last_elapsed_ms} ms{session.prompt_tokens != null ? ` · 已记录输入 ${session.prompt_tokens} token` : ''}{session.cached_input_tokens != null && session.cache_reported_input_tokens > 0 ? ` · 已报告缓存命中 ${Math.round(100 * session.cached_input_tokens / session.cache_reported_input_tokens)}%（${session.cached_input_tokens}/${session.cache_reported_input_tokens}）` : ' · 服务商尚未报告缓存命中量'}</p>}

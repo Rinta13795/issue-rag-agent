@@ -166,8 +166,6 @@ class AnswerQuestionRequest(BaseModel):
 
 class ChatSession(BaseModel):
     session_id: str
-    workspace_id: str | None = None
-    code_edits_allowed: bool = False
     repository_id: str | None = None  # 旧会话没有仓库归属，不允许继续跨库检索
     source_issue: SourceIssue | None = None
     pending_question: PendingQuestion | None = None
@@ -219,13 +217,6 @@ class CreateChatSessionRequest(BaseModel):
     repository_id: str = Field(min_length=1, max_length=80)
     issue_url: str | None = Field(default=None, max_length=300)
     case_id: str | None = Field(default=None, max_length=80)
-    workspace_id: str | None = Field(default=None, max_length=80)
-    allow_edits: bool = False
-
-
-class UpdateCodeWorkspaceRequest(BaseModel):
-    workspace_id: str | None = Field(default=None, max_length=80)
-    allow_edits: bool = False
 
 
 class PreviewIssueRequest(BaseModel):
