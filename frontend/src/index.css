@@ -1828,6 +1828,15 @@ input[type="checkbox"] {
     padding: 20px;
     gap: 16px;
     border-radius: 5px;
+    /* Compact panels may be shorter than their non-shrinking controls.
+       Scroll the whole panel rather than squeezing the history list to zero. */
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .chat-session-list .chat-history-scroll {
+    flex: none;
+    overflow: visible;
   }
   .chat-session-list::before,
   .chat-session-list::after { display: none; }
