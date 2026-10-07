@@ -22,7 +22,7 @@ Issue RAG Agent 是面向研发团队的 Issue 检索与辅助分诊工作台。
 
 工作台包含 **Agent 工作台、知识与数据源、质量评估** 三个入口。界面使用统一的纸面色、墨色层级与细线分隔，把任务、证据和结论放在同一条操作路径上。
 
-这里的 Agent 是具有条件重试的任务型工作流：四个节点按既定顺序执行，低置信度时重新组织检索。当前不包含自主工具选择、任意任务规划或多 Agent 协作。
+单次分诊使用具有条件重试的四节点工作流。对话调查使用独立 Runtime，可按需选择 Issue、PR、本地源码和公开参考仓库工具；不包含多 Agent 协作。
 
 ## 架构设计
 
@@ -142,7 +142,7 @@ npm run dev
 
 主索引来自 GitBugs 历史快照。若要查询其他公开 GitHub 仓库，在新对话页输入 `owner/repo`（或仓库 URL），点击“同步并开始对话”。后台从 GitHub API 读取最近更新的最多 300 条公开 Issue，排除 PR，建立独立的 BM25、Chroma 和正文证据快照；完成后自动创建绑定该仓库的对话。首次建立快照可能需要几分钟；同仓库再次使用时直接复用。可选在服务端设置 `GITHUB_TOKEN` 提高 API 额度，不需把 Token 填入页面。
 
-这个入口不读取私有仓库，也不实时读取 PR、代码或文档。已建快照不会自动更新，时间和样本范围会在仓库选择器中展示；命中某条 Issue 不等于故障已修复。跨仓库问题应新开对话分别核验，当前不会自动跨库混合证据。旧的 OpenHarness 专用同步脚本仅保留为兼容已有本地快照的方式：
+建立快照的入口只同步公开 Issue，不索引 PR 或源码。已建快照不会自动更新，时间和样本范围会在仓库选择器中展示；命中某条 Issue 不等于故障已修复。对话可按需读取 PR，并显式指定公开参考仓库读取代码；参考证据保留来源，不混入当前仓库的 Issue 索引。旧的 OpenHarness 专用同步脚本仅保留为兼容已有本地快照的方式：
 
 ```bash
 python -m scripts.sync_openharness_issues
@@ -151,6 +151,10 @@ python -m scripts.sync_openharness_issues
 旧脚本生成的快照仍可选，但新增仓库不再需要编写专用脚本。
 
 ## 接口与集成
+
+新对话选择“读取本地项目”，无需建立 Issue 索引，即可检查源码、搜索调用位置和读取测试。默认可选项目为服务所在的仓库；其他项目由服务器的 `ISSUE_AGENT_WORKSPACES` 配置。已有对话也可展开“连接本地项目”入口。读取默认为只读；勾选“允许修改并运行检查”后，用户要求修复时，Agent 可以使用版本校验的片段替换工具，并执行固定测试、构建或 lint。过程展示实际 diff 和检查退出码。完整范围与配置见 [源码调查工具](docs/code-tools.md)。
+
+源码工作台只接受本机访问。文件工具限定已连接项目，不开放任意 shell、自动提交或推送；项目检查是本机执行可信测试代码，不是操作系统沙箱。
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
@@ -163,6 +167,8 @@ python -m scripts.sync_openharness_issues
 | GET | `/api/system` | 查询演示元数据与索引存在状态 |
 | GET | `/api/evaluation/summary` | 读取本地评测结果 |
 | GET | `/api/chat/repositories` | 列出本地已索引仓库 |
+| GET | `/api/chat/workspaces` | 列出服务端配置的源码项目 |
+| PATCH | `/api/chat/sessions/{session_id}/workspace` | 连接源码项目并设置本会话修改权限 |
 | POST | `/api/chat/repositories/sync` | 按需同步公开 GitHub 仓库，返回后台任务 |
 | GET | `/api/chat/repositories/sync/{job_id}` | 查询同步进度与结果 |
 | GET | `/api/chat/sessions` | 列出本地对话 |

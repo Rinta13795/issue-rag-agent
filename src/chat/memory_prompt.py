@@ -8,7 +8,7 @@ MEMORY_INPUT_CHAR_BUDGET = 16000
 
 def memory_prompt_payload(payload):
     result = {key: deepcopy(payload.get(key)) for key in (
-        'session_id', 'message_id', 'repository_id', 'case_id', 'investigation_summary',
+        'session_id', 'message_id', 'repository_id', 'workspace_id', 'case_id', 'investigation_summary',
         'user_messages', 'assistant_message', 'source_issue', 'candidates',
     )}
     result['investigation_summary'] = str(result.get('investigation_summary') or '')[:1200]
@@ -36,6 +36,7 @@ def memory_prompt_payload(payload):
         result['tool_evidence'].append({
             'id': item.get('id'), 'kind': item.get('kind'), 'title': str(item.get('title') or '')[:240],
             'url': item.get('url'), 'text': select_message_excerpt(text, 1000),
+            'metadata': deepcopy(item.get('metadata') or {}),
             'truncated': bool(item.get('truncated')) or len(text) > 1000,
         })
     # Drop optional material, never clip serialized JSON into an invalid object.
