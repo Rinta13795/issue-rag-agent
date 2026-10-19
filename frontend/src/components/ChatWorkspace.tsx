@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -57,20 +56,11 @@ const statusLabels: Record<string, string> = {
   answering: '正在整理证据与回答',
 }
 
-type WorkspaceView = 'chat' | 'workspace' | 'knowledge' | 'quality'
-interface Props {
-  onOpenTriage: () => void
-  activeView: WorkspaceView
-  onNavigate: (view: WorkspaceView) => void
-  children?: ReactNode
-}
-
-export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }: Props) {
+export function ChatWorkspace() {
   const [historySearch, setHistorySearch] = useState('')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem('issue-rag-sidebar-collapsed') === 'true')
   const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false)
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 640px)').matches)
-  const [moreOpen, setMoreOpen] = useState(false)
   const sidebarCloseRef = useRef<HTMLButtonElement>(null)
   const sidebarOpenRef = useRef<HTMLButtonElement>(null)
   const historyPanelRef = useRef<HTMLElement>(null)
@@ -124,9 +114,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
       window.requestAnimationFrame(() => sidebarCloseRef.current?.focus())
     }
   }
-  const navigate = (view: WorkspaceView) => {
-    onNavigate(view)
-    setMoreOpen(false)
+  const showChat = () => {
     setMobileHistoryOpen(false)
   }
   const [session, setSession] = useState<ChatSession | null>(null)
@@ -248,11 +236,10 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
   }, [session?.memory_organization?.status, session?.repository_id])
 
   useEffect(() => {
-    if (activeView !== 'chat') return
     const switched = lastViewedSessionRef.current !== sessionId
     lastViewedSessionRef.current = sessionId
     if (switched || followConversationRef.current) endRef.current?.scrollIntoView({ behavior: switched || session?.streaming_answer ? 'instant' : 'smooth', block: 'end' })
-  }, [session?.messages.length, session?.streaming_answer, session?.runtime_steps?.length, sessionId, activeView])
+  }, [session?.messages.length, session?.streaming_answer, session?.runtime_steps?.length, sessionId])
 
   useEffect(() => {
     setIssueTitle(session?.issue_draft?.title || '')
@@ -278,7 +265,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
 
 
   const startNew = () => {
-    navigate('chat')
+    showChat()
     setHistorySearch('')
     selectionEpochRef.current += 1
     window.localStorage.removeItem(STORAGE_KEY)
@@ -394,7 +381,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
       if (selectionEpochRef.current !== openEpoch) return
       window.localStorage.setItem(STORAGE_KEY, id)
       setSession(opened)
-      navigate('chat')
+      showChat()
       setDraft('')
       setNotice(null)
       setError(null)
@@ -603,7 +590,7 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
     <aside ref={historyPanelRef} id="chat-history" className="chat-session-list" aria-label="历史对话" hidden={sidebarHidden}
       onKeyDown={(event) => { if (event.key === 'Escape') closeHistory() }}>
       <div className="chat-sidebar-head">
-        <button type="button" className="chat-brand" onClick={() => navigate('chat')}>Issue Agent</button>
+        <button type="button" className="chat-brand" onClick={() => showChat()}>Issue Agent</button>
         <button ref={sidebarCloseRef} type="button" className="btn btn--sm" onClick={closeHistory} aria-label={isMobile ? '关闭历史对话' : '折叠侧栏'}>{isMobile ? '关闭' : '收起'}</button>
       </div>
       <button type="button" className="btn chat-new-session" onClick={startNew}>＋ 新对话</button>
@@ -616,24 +603,17 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
       <nav className="chat-history-scroll" aria-label="最近会话">
         {visibleSessions.map((item) => <button type="button" key={item.session_id}
           className={`chat-session-item ${session?.session_id === item.session_id ? 'chat-session-item--active' : ''}`}
-          aria-current={activeView === 'chat' && session?.session_id === item.session_id ? 'page' : undefined}
+          aria-current={session?.session_id === item.session_id ? 'page' : undefined}
           onClick={() => void openSession(item.session_id)}>
           <span>{item.title}</span><small>{repositoryLabel(item.repository_id)}</small>
           {session?.session_id === item.session_id && <small className="chat-current-label">当前对话</small>}
         </button>)}
         {!visibleSessions.length && <p className="chat-side-note">{search ? '没有匹配的对话。' : '还没有对话。'}</p>}
       </nav>
-      <div className="chat-sidebar-more">
-        <button type="button" className="btn" aria-expanded={moreOpen} aria-controls="chat-more-links" onClick={() => setMoreOpen(!moreOpen)}>更多 {moreOpen ? '−' : '＋'}</button>
-        {moreOpen && <nav id="chat-more-links" aria-label="更多功能">
-          {([['workspace', '单次分诊'], ['knowledge', '知识与数据源'], ['quality', '质量评估']] as const).map(([view, label]) =>
-            <button type="button" key={view} className="chat-session-item" aria-current={activeView === view ? 'page' : undefined} onClick={() => navigate(view)}>{label}</button>)}
-        </nav>}
-      </div>
     </aside>
-    <div className={`chat-main-area ${activeView === 'chat' && hasConversation ? 'chat-main-area--thread' : ''}`}>
+    <div className={`chat-main-area ${hasConversation ? 'chat-main-area--thread' : ''}`}>
       {(isMobile || sidebarHidden) && <div className="chat-sidebar-toolbar"><button ref={sidebarOpenRef} type="button" className="btn btn--sm" onClick={mobileHistoryOpen ? closeHistory : openHistory} aria-expanded={!sidebarHidden} aria-controls="chat-history">{isMobile ? '历史对话' : '展开侧栏'}</button></div>}
-      <div className="chat-conversation-area" hidden={activeView !== 'chat'}>
+      <div className="chat-conversation-area">
     {!hasConversation && <section className="chat-home" aria-label="开始对话">
       <div className="masthead-pre">ISSUE TRIAGE / CONVERSATION</div>
       <h1 className="masthead-title">从一个问题开始<span className="dot">。</span></h1>
@@ -672,7 +652,6 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
       {session && composer}
       <div className="chat-home-foot">
         <span>不确定怎么描述？从一句话开始也可以。</span>
-        <button type="button" onClick={onOpenTriage}>使用单次分诊 →</button>
       </div>
     </section>}
 
@@ -849,7 +828,6 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
           {session?.live_search_status === 'failed' && <p className="chat-side-note">实时搜索未完成：{session.live_search_message || 'GitHub 暂时不可用'}。不能据此认定仓库没有相关 Issue。</p>}
           <p className="chat-side-note">{session ? `模型调用 ${session.model_calls} 次 · 检索 ${session.retrieval_calls} 次` : '等待会话建立'}</p>
           {session?.last_elapsed_ms != null && <p className="chat-side-note">上一轮耗时 {session.last_elapsed_ms} ms{session.prompt_tokens != null ? ` · 已记录输入 ${session.prompt_tokens} token` : ''}{session.cached_input_tokens != null && session.cache_reported_input_tokens > 0 ? ` · 已报告缓存命中 ${Math.round(100 * session.cached_input_tokens / session.cache_reported_input_tokens)}%（${session.cached_input_tokens}/${session.cache_reported_input_tokens}）` : ' · 服务商尚未报告缓存命中量'}</p>}
-          <button type="button" className="btn btn--sm" onClick={onOpenTriage}>转到单次分诊</button>
         </section>
           </div>
         </details>
@@ -858,7 +836,6 @@ export function ChatWorkspace({ onOpenTriage, activeView, onNavigate, children }
       <div className="chat-composer-dock">{session?.repository_id ? composer : <p className="chat-side-note">这是升级前未绑定仓库的旧对话。请点“新对话”并选择仓库后继续。</p>}</div>
     </section>}
       </div>
-      {activeView !== 'chat' && children}
     </div>
   </div>
 }
