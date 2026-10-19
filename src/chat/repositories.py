@@ -53,7 +53,7 @@ def repository_exists(repository_id: str) -> bool:
 
 def get_chat_retrieval_dependencies(repository_id: str):
     """GitHub 仓库使用独立快照；GitBugs 历史库共享原索引并硬过滤。"""
-    from src.agent.graph import get_cached_reranker, get_retrieval_dependencies
+    from src.retrievers.loaders import get_cached_reranker, get_retrieval_dependencies
 
     if repository_id == "openharness":
         return _get_overlay_retriever(str(OVERLAY_DIR)), get_cached_reranker()
