@@ -4,7 +4,7 @@ from langgraph.graph import END, StateGraph
 from loguru import logger
 import threading
 
-from config import CHROMA_COLLECTION, CHROMA_PERSIST_DIR, CONFIDENCE_THRESHOLD, MAX_RETRIES
+from config import CONFIDENCE_THRESHOLD, MAX_RETRIES
 from src.agent.nodes import (
     configure_dependencies,
     decision_node,
@@ -13,79 +13,27 @@ from src.agent.nodes import (
     retrieval_node,
 )
 from src.agent.state import IssueState
+from src.retrievers.loaders import get_retrieval_dependencies
 
 
-_HYBRID_RETRIEVER = None
-_RERANKER = None
 _DEPENDENCIES_READY = False
 _COMPILED_GRAPH = None
 _DEPENDENCIES_LOCK = threading.Lock()
 
 
-def get_hybrid_retriever():
-    """输入无，输出已初始化的 HybridRetriever，供 Retrieval 节点复用。"""
-    # Chroma 和检索器依赖只在真正构建 Agent 图时导入，避免 import run_agent 时提前加载重模型。
-    from langchain_chroma import Chroma
-
-    from src.docstore import load_docstore
-    from src.indexer import load_embeddings
-    from src.retrievers.bm25_retriever import BM25Retriever
-    from src.retrievers.hybrid_retriever import HybridRetriever
-    from src.retrievers.vector_retriever import VectorRetriever
-
-    # ChromaDB 读取 Step2 构建好的持久化向量库，Embedding 用同一套本地模型。
-    vectorstore = Chroma(
-        collection_name=CHROMA_COLLECTION,
-        embedding_function=load_embeddings(),
-        persist_directory=CHROMA_PERSIST_DIR,
-    )
-
-    # VectorRetriever 负责语义召回，BM25Retriever 负责关键词召回，HybridRetriever 用 RRF 融合。
-    # docstore 为融合后缺正文的候选（BM25-only）补齐 title/body；文件缺失时退回 v1 行为。
-    vector_retriever = VectorRetriever(vectorstore)
-    bm25_retriever = BM25Retriever()
-    return HybridRetriever(vector_retriever, bm25_retriever, docstore=load_docstore())
-
-
-def get_reranker():
-    """输入无，输出已初始化的 Reranker，供 Rerank 节点复用。"""
-    # Reranker 内部会加载 CrossEncoder，延迟到 run_agent/build_graph 时再加载，避免 import 阶段失败。
-    from src.reranker import Reranker
-
-    return Reranker()
-
-
 def _ensure_dependencies() -> None:
-    """输入无，确保 HybridRetriever、Reranker、LLM 依赖只初始化一次。"""
-    global _HYBRID_RETRIEVER, _RERANKER, _DEPENDENCIES_READY
+    """确保旧流水线的节点拿到检索器和重排模型；加载本身交给 loaders，只做一次。"""
+    global _DEPENDENCIES_READY
     if _DEPENDENCIES_READY:
         return
     with _DEPENDENCIES_LOCK:
         if _DEPENDENCIES_READY:
             return
-        # 聊天和单次分诊共享重模型；并发首请求只初始化一次。
         logger.info("初始化 LangGraph 依赖：HybridRetriever + Reranker")
-        _HYBRID_RETRIEVER = get_hybrid_retriever()
-        if _RERANKER is None:
-            _RERANKER = get_reranker()
-        configure_dependencies(_HYBRID_RETRIEVER, _RERANKER)
+        retriever, reranker = get_retrieval_dependencies()
+        configure_dependencies(retriever, reranker)
         _DEPENDENCIES_READY = True
 
-
-def get_retrieval_dependencies():
-    """返回已缓存的混合检索器与精排器，供对话入口复用。"""
-    _ensure_dependencies()
-    return _HYBRID_RETRIEVER, _RERANKER
-
-
-def get_cached_reranker():
-    """仅聊天 OpenHarness 时不预加载十万条 GitBugs 的 BM25 索引。"""
-    global _RERANKER
-    if _RERANKER is None:
-        with _DEPENDENCIES_LOCK:
-            if _RERANKER is None:
-                _RERANKER = get_reranker()
-    return _RERANKER
 
 # build_graph的辅助函数
 def should_retry(state: IssueState) -> str:

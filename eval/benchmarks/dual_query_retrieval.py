@@ -377,7 +377,7 @@ def run_benchmark(
         EMBED_MODEL,
         RERANKER_MODEL,
     )
-    from src.agent.graph import get_hybrid_retriever, get_reranker
+    from src.retrievers.loaders import get_hybrid_retriever, get_reranker
 
     retriever = get_hybrid_retriever()
     reranker = get_reranker()
