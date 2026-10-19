@@ -6,23 +6,15 @@
 接口：
     GET  /health                  存活探针（不触发模型加载）
     POST /triage                  同步兼容接口（返回 duplicate/similar/new 判断）
-    POST /api/runs                创建可观测运行任务（立即返回 run_id）
-    GET  /api/runs/{run_id}       获取指定 run 的状态快照
-    GET  /api/runs/{run_id}/events SSE 节点级实时事件流
-    GET  /api/examples            获取预设演示样例
-    GET  /api/system              获取系统元数据与限制说明
-    GET  /api/evaluation/summary  获取真实评测指标汇总
 """
 
 import asyncio
 import json
 import os
-import uuid
 import time
 import ipaddress
 from urllib.parse import urlsplit
 from pathlib import Path
-from typing import AsyncGenerator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,19 +23,6 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from src.demo.eval_service import get_system_info, load_evaluation_summary
-from src.demo.examples import get_preset_examples
-from src.demo.models import (
-    CreateRunRequest,
-    CreateRunResponse,
-    EvaluationSummary,
-    ExampleItem,
-    RunSnapshot,
-    RunStatus,
-    SystemInfo,
-)
-from src.demo.run_store import get_run_store
-from src.demo.runner import get_observable_runner
 from src.chat.models import AnswerQuestionRequest, ChatRepository, ChatSession, ChatSessionSummary, ConfirmMemoryRequest, CreateChatSessionRequest, MemoryCase, MemoryProposal, MemoryRecord, MemorySettings, MemorySourceRef, PreviewIssueRequest, PublishIssueDraftRequest, SendChatMessageRequest, SendChatMessageResponse, SourceIssue, SyncRepositoryRequest, SyncRepositoryStatus, UpdateIssueDraftRequest, UpdateMemoryRequest, UpdateMemorySettingsRequest, utc_now
 from src.chat.github_sync import GitHubPublishError, create_github_issue, fetch_issue, get_sync_manager, repository_id
 from src.chat.repositories import list_repositories, repository_exists
@@ -126,104 +105,6 @@ def triage(request: TriageRequest) -> TriageResponse:
         reasoning=result["reasoning"],
         retry_count=result["retry_count"],
     )
-
-
-# ==================== 可观测 Demo 接口 ====================
-
-@app.post("/api/runs", response_model=CreateRunResponse)
-def create_run(request: CreateRunRequest) -> CreateRunResponse:
-    """创建异步可观测运行任务，立即返回 run_id。"""
-    run_id = f"run_{uuid.uuid4().hex[:12]}"
-    clean_text = request.issue_text.strip()
-    if not clean_text:
-        raise HTTPException(status_code=400, detail="issue_text 不能为空")
-
-    store = get_run_store()
-    snapshot = store.create_run(run_id, clean_text)
-
-    runner = get_observable_runner()
-    runner.submit_run(run_id, clean_text)
-
-    return CreateRunResponse(
-        run_id=run_id,
-        status=snapshot.status,
-        created_at=snapshot.created_at,
-    )
-
-
-@app.get("/api/runs/{run_id}", response_model=RunSnapshot)
-def get_run_snapshot(run_id: str) -> RunSnapshot:
-    """获取运行快照。"""
-    store = get_run_store()
-    snapshot = store.get_run(run_id)
-    if not snapshot:
-        raise HTTPException(status_code=404, detail=f"未找到 run_id={run_id}")
-    return snapshot
-
-
-@app.get("/api/runs/{run_id}/events")
-async def get_run_events(run_id: str):
-    """Server-Sent Events (SSE) 事件流：推送节点生命周期事件。"""
-    store = get_run_store()
-    snapshot = store.get_run(run_id)
-    if not snapshot:
-        raise HTTPException(status_code=404, detail=f"未找到 run_id={run_id}")
-
-    queue: asyncio.Queue = asyncio.Queue()
-    store.add_listener(run_id, queue)
-
-    async def event_generator() -> AsyncGenerator[str, None]:
-        try:
-            # 首先发送一次当前初始状态
-            init_data = json.dumps({"event": "run.snapshot", "data": snapshot.model_dump()})
-            yield f"data: {init_data}\n\n"
-
-            if snapshot.status in (RunStatus.COMPLETED, RunStatus.FAILED):
-                return
-
-            while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
-                    msg = json.dumps(event)
-                    yield f"data: {msg}\n\n"
-                    if event.get("event") in ("run.completed", "run.failed"):
-                        break
-                except asyncio.TimeoutError:
-                    # 发送保活心跳
-                    yield ": ping\n\n"
-                    current = store.get_run(run_id)
-                    if current and current.status in (RunStatus.COMPLETED, RunStatus.FAILED):
-                        break
-        finally:
-            store.remove_listener(run_id, queue)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-@app.get("/api/examples", response_model=list[ExampleItem])
-def get_examples() -> list[ExampleItem]:
-    """获取预设演示样例列表。"""
-    return get_preset_examples()
-
-
-@app.get("/api/system", response_model=SystemInfo)
-def get_system() -> SystemInfo:
-    """获取系统架构与模型状态。"""
-    return get_system_info()
-
-
-@app.get("/api/evaluation/summary", response_model=EvaluationSummary)
-def get_evaluation() -> EvaluationSummary:
-    """获取真实评测指标汇总。"""
-    return load_evaluation_summary()
 
 
 # ==================== 本地多轮对话 ====================
