@@ -1,7 +1,7 @@
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { answerChatQuestion, ChatApiError, confirmMemory, createChatSession, createIssueDraft, deleteMemory, editIssueDraft, getChatSession, getMemorySettings, getRepositorySync, listChatRepositories, listChatSessions, listenChatEvents, listMemories, listMemoryCases, previewChatIssue, proposeMemory, publishIssueDraft, retryChatMessage, sendChatMessage, syncChatRepository, updateMemory, updateMemorySettings } from '../api'
+import { answerChatQuestion, ChatApiError, confirmMemory, createChatSession, createIssueDraft, deleteMemory, editIssueDraft, getChatSession, getMemorySettings, getRepositorySync, listChatRepositories, listChatSessions, listenChatEvents, listMemories, listMemoryCases, proposeMemory, publishIssueDraft, retryChatMessage, sendChatMessage, syncChatRepository, updateMemory, updateMemorySettings } from '../api'
 import type { ChatRepository, ChatSession, ChatSessionSummary, MemoryCase, MemoryRecord } from '../types'
 
 const codeToolLabels: Record<string, string> = {
@@ -122,8 +122,6 @@ export function ChatWorkspace() {
   const [repositories, setRepositories] = useState<ChatRepository[]>([])
   const [selectedRepository, setSelectedRepository] = useState('')
   const [githubRepository, setGithubRepository] = useState('')
-  const [issueLink, setIssueLink] = useState('')
-  const [entryMode, setEntryMode] = useState<'repository' | 'issue'>('repository')
   const [syncStatus, setSyncStatus] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [issueTitle, setIssueTitle] = useState('')
@@ -272,8 +270,6 @@ export function ChatWorkspace() {
     setSession(null)
     setSelectedRepository('')
     setGithubRepository('')
-    setIssueLink('')
-    setEntryMode('repository')
     setSyncStatus(null)
     setDraft('')
     setIssueTitle('')
@@ -304,43 +300,6 @@ export function ChatWorkspace() {
       await refreshSessions()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '暂时无法创建会话')
-    }
-  }
-
-  const importIssue = async () => {
-    if (!issueLink.trim()) {
-      setError('请先粘贴 GitHub Issue 链接，再读取。')
-      document.getElementById('chat-issue-link')?.focus()
-      return
-    }
-    if (!/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/issues\/[1-9]\d*(?:[/?#].*)?$/i.test(issueLink.trim())) {
-      setError('请填写具体 Issue 链接，例如 https://github.com/openai/codex/issues/123。只有仓库或 /issues 列表地址时，请选择“从仓库开始”。')
-      document.getElementById('chat-issue-link')?.focus()
-      return
-    }
-    const importEpoch = ++selectionEpochRef.current
-    setError(null)
-    setSyncStatus('正在读取源 Issue…')
-    try {
-      const source = await previewChatIssue(issueLink.trim())
-      if (selectionEpochRef.current !== importEpoch) return
-      let job = await syncChatRepository(source.repository)
-      while (selectionEpochRef.current === importEpoch && job.status !== 'completed' && job.status !== 'failed') {
-        setSyncStatus(job.message)
-        await new Promise((resolve) => window.setTimeout(resolve, 1200))
-        if (selectionEpochRef.current !== importEpoch) return
-        job = await getRepositorySync(job.job_id)
-      }
-      if (selectionEpochRef.current !== importEpoch) return
-      if (job.status === 'failed' || !job.repository_id) throw new Error(job.message)
-      setRepositories(await listChatRepositories())
-      if (selectionEpochRef.current !== importEpoch) return
-      setSyncStatus(null)
-      await createForRepository(job.repository_id, source.url)
-    } catch (caught) {
-      if (selectionEpochRef.current !== importEpoch) return
-      setSyncStatus(null)
-      setError(caught instanceof Error ? caught.message : 'Issue 导入失败')
     }
   }
 
@@ -619,20 +578,10 @@ export function ChatWorkspace() {
       <h1 className="masthead-title">从一个问题开始<span className="dot">。</span></h1>
       <p className="masthead-sub">选择仓库，描述问题；Agent 会查找相关 Issue、PR，陪你继续排查。</p>
       {!session && <div className="chat-repository-picker">
-        <div className="chat-entry-modes" aria-label="选择一种开始方式">
-          <button type="button" className="btn" aria-pressed={entryMode === 'repository'} disabled={Boolean(syncStatus)} onClick={() => { setEntryMode('repository'); setError(null) }}>从仓库开始</button>
-          <button type="button" className="btn" aria-pressed={entryMode === 'issue'} disabled={Boolean(syncStatus)} onClick={() => { setEntryMode('issue'); setError(null) }}>导入具体 Issue</button>
-        </div>
-        <p className="chat-entry-note">选择一种即可。导入具体 Issue 时，也会自动准备它所属的仓库。</p>
-        {entryMode === 'issue' ? <div className="chat-repository-add">
-          <label className="field-label" htmlFor="chat-issue-link">具体 Issue 链接</label>
-          <input id="chat-issue-link" className="field-input" value={issueLink} disabled={Boolean(syncStatus)} onChange={(event) => setIssueLink(event.target.value)} placeholder="https://github.com/owner/repo/issues/123" aria-describedby="chat-issue-link-hint" />
-          <p id="chat-issue-link-hint" className="chat-entry-note">链接末尾需要有问题编号。仓库的 /issues 列表页，请使用“从仓库开始”。</p>
-          <button type="button" className="btn btn--primary" disabled={Boolean(syncStatus)} onClick={() => void importIssue()}>{syncStatus ? '正在准备…' : '读取并开始对话'}</button>
-        </div> : <div className="chat-repository-add">
+        <div className="chat-repository-add">
           <label className="field-label" htmlFor="chat-github-repository">GitHub 仓库</label>
-          <input id="chat-github-repository" className="field-input" value={githubRepository} disabled={Boolean(syncStatus)} onChange={(event) => setGithubRepository(event.target.value)} placeholder="owner/repo，或粘贴仓库链接" />
-          <p className="chat-entry-note">准备好仓库后，直接描述你遇到的问题。</p>
+          <input id="chat-github-repository" className="field-input" value={githubRepository} disabled={Boolean(syncStatus)} onChange={(event) => setGithubRepository(event.target.value)} placeholder="owner/repo，或直接粘贴地址栏里的 GitHub 链接" />
+          <p className="chat-entry-note">仓库首页、Issue 列表或某条 Issue 的链接都可以。第一次用的仓库要先建索引，需要几分钟。</p>
           <button type="button" className="btn btn--primary" disabled={Boolean(syncStatus)} onClick={() => void syncAndCreate()}>{syncStatus ? '正在准备…' : '准备仓库并开始对话'}</button>
           <details className="chat-existing-repositories">
             <summary>使用已准备好的仓库</summary>
@@ -643,7 +592,7 @@ export function ChatWorkspace() {
             </select>
             <button type="button" className="btn" disabled={Boolean(syncStatus) || !selectedRepository} onClick={() => void createForRepository()}>开始对话</button>
           </details>
-        </div>}
+        </div>
         {syncStatus && <p className="chat-connection chat-entry-progress" role="status">{syncStatus}。首次准备可能需要几分钟，完成后会自动进入对话。</p>}
       </div>}
       {notice && <p className="chat-connection" role="status">{notice}</p>}

@@ -23,6 +23,36 @@ def test_reject_invalid_repository(value):
         github_sync.normalize_repository(value)
 
 
+@pytest.mark.parametrize("value", [
+    "anthropics/claude-code",
+    "https://github.com/anthropics/claude-code",
+    "https://github.com/anthropics/claude-code/issues",
+    "https://github.com/anthropics/claude-code/issues/123",
+    "https://github.com/anthropics/claude-code/pull/45?tab=files",
+    "https://github.com/anthropics/claude-code/tree/main/docs#readme",
+    "github.com/anthropics/claude-code/issues",
+    "https://www.github.com/anthropics/claude-code.git",
+])
+def test_repository_from_link_accepts_address_bar_links(value):
+    assert github_sync.repository_from_link(value) == "anthropics/claude-code"
+
+
+@pytest.mark.parametrize("value", [
+    "https://evil.example.com/anthropics/claude-code", "https://github.com.evil.com/anthropics/claude-code",
+    "https://github.com/anthropics", "https://github.com/", "anthropics", "", "../repo",
+])
+def test_repository_from_link_rejects_other_hosts_and_missing_repo(value):
+    with pytest.raises(ValueError):
+        github_sync.repository_from_link(value)
+
+
+def test_sync_start_accepts_issue_list_link(monkeypatch):
+    monkeypatch.setattr(github_sync, "snapshot_complete", lambda project: True)
+    status = github_sync.RepositorySyncManager().start("https://github.com/anthropics/claude-code/issues")
+    assert status.repository == "anthropics/claude-code"
+    assert status.status == "completed"
+
+
 def test_fetch_issues_excludes_pull_requests_and_limits_snapshot(monkeypatch):
     calls = []
 

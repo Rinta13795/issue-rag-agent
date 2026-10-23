@@ -138,6 +138,24 @@ def normalize_repository(value: str) -> str:
     return value
 
 
+def repository_from_link(value: str) -> str:
+    """开始页专用：从用户粘贴的内容里取出 owner/repo，再交给 normalize_repository 严格校验。
+
+    接受 owner/repo、仓库首页，以及地址栏里带后续路径的 github.com 链接（/issues 列表、某条 Issue/PR、/tree/...），
+    忽略 ? 和 # 后面的部分。Agent 工具仍直接用 normalize_repository，不放宽。
+    """
+    text = value.strip()
+    parsed = urlsplit(text if "://" in text else ("https://" + text if text.lower().startswith(("github.com/", "www.github.com/")) else text))
+    if parsed.scheme in ("http", "https"):
+        if parsed.netloc.lower() not in ("github.com", "www.github.com"):
+            raise ValueError("只支持 github.com 上的公开仓库链接")
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) < 2:
+            raise ValueError("链接里没有找到仓库，请粘贴类似 https://github.com/owner/repo 的地址")
+        return normalize_repository("/".join(parts[:2]))
+    return normalize_repository(text)
+
+
 def repository_id(full_name: str) -> str:
     return "gh-" + hashlib.sha256(full_name.lower().encode()).hexdigest()[:16]
 
@@ -274,7 +292,7 @@ class RepositorySyncManager:
         self._running: dict[str, str] = {}
 
     def start(self, value: str) -> SyncRepositoryStatus:
-        full_name = normalize_repository(value)
+        full_name = repository_from_link(value)
         project = repository_id(full_name)
         if snapshot_complete(project):
             return SyncRepositoryStatus(job_id="cached", repository=full_name, status="completed",
