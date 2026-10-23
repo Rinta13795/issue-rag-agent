@@ -157,3 +157,45 @@ def test_publish_without_server_token_is_known_failure(monkeypatch):
     with pytest.raises(github_sync.GitHubPublishError) as exc:
         github_sync.create_github_issue("Owner/Repo", "Title", "Body")
     assert exc.value.definite is True
+
+
+def _rate_limited(url, *args, **kwargs):
+    from email.message import Message
+    from urllib.error import HTTPError
+    headers = Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    headers["X-RateLimit-Reset"] = "1792739471"
+    raise HTTPError(url, 403, "rate limit exceeded", headers, None)
+
+
+def test_anonymous_rate_limit_falls_back_to_logged_in_gh(monkeypatch):
+    import subprocess
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(github_sync, "urlopen", _rate_limited)
+    monkeypatch.setattr(github_sync.shutil, "which", lambda name: "/usr/bin/gh")
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout='{"full_name": "Owner/Repo"}', stderr="")
+
+    monkeypatch.setattr(github_sync.subprocess, "run", fake_run)
+    assert github_sync._request_json("https://api.github.com/repos/owner/repo") == {"full_name": "Owner/Repo"}
+    assert calls[0][1:3] == ["api", "https://api.github.com/repos/owner/repo"]
+
+
+def test_rate_limit_without_gh_says_when_it_recovers(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(github_sync, "urlopen", _rate_limited)
+    monkeypatch.setattr(github_sync.shutil, "which", lambda name: None)
+    with pytest.raises(ValueError, match="后恢复.*gh auth login"):
+        github_sync._request_json("https://api.github.com/repos/owner/repo")
+
+
+def test_rate_limit_with_server_token_does_not_switch_identity(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setattr(github_sync, "urlopen", _rate_limited)
+    monkeypatch.setattr(github_sync.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(github_sync.subprocess, "run", lambda *a, **k: pytest.fail("不应改用 gh"))
+    with pytest.raises(ValueError, match="额度不足"):
+        github_sync._request_json("https://api.github.com/repos/owner/repo")

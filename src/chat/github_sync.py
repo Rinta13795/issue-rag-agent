@@ -179,32 +179,50 @@ def _request_json(url: str):
         if exc.code == 404:
             raise ValueError("仓库不存在、不是公开仓库，或当前 Token 无权访问") from exc
         if exc.code in (403, 429):
-            raise ValueError("GitHub API 额度不足或访问受限；稍后重试，或在服务端配置 GITHUB_TOKEN") from exc
+            headers = exc.headers or {}
+            # 只有匿名额度（每小时 60 次）用完才改走已登录的 gh（5000 次/小时）；其他拒绝不换通道。
+            if not token and headers.get("X-RateLimit-Remaining") == "0" and shutil.which("gh"):
+                return _request_json_via_gh(url)
+            raise ValueError(_rate_limit_message(headers.get("X-RateLimit-Reset"))) from exc
         raise ValueError(f"GitHub API 返回 HTTP {exc.code}") from exc
-    except URLError as exc:
+    except URLError:
         # 某些本机代理的TLS握手不兼容urllib；沿用已安装gh的只读API通道。
-        parsed = urlsplit(url)
-        executable = shutil.which("gh")
-        if not executable or parsed.scheme != "https" or parsed.netloc != "api.github.com":
+        if not shutil.which("gh") or urlsplit(url).netloc != "api.github.com":
             raise
-        env = os.environ.copy()
-        for kind, value in getproxies().items():
-            if kind in {"http", "https", "no"}:
-                env[kind + "_proxy"] = value
-                env[kind.upper() + "_PROXY"] = value
-        try:
-            response = subprocess.run([executable, "api", url, "--method", "GET"], env=env,
-                                      capture_output=True, text=True, timeout=30, check=False)
-            if response.returncode != 0:
-                detail = getattr(response, "stderr", "")
-                if "HTTP 403" in detail or "HTTP 429" in detail:
-                    raise ValueError("GitHub API 额度不足或访问受限；稍后重试，或在服务端配置 GITHUB_TOKEN")
-                if "HTTP 404" in detail:
-                    raise ValueError("仓库不存在、不是公开仓库，或当前 Token 无权访问")
-                raise ValueError("GitHub 连接失败，备用只读通道也未成功；请稍后重试")
-            return json.loads(response.stdout)
-        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as fallback_error:
-            raise ValueError("GitHub 只读连接未完成；请稍后重试") from fallback_error
+        return _request_json_via_gh(url)
+
+
+def _rate_limit_message(reset: str | None) -> str:
+    message = "GitHub API 额度不足或访问受限"
+    if reset and reset.isdigit():
+        message += "，" + datetime.fromtimestamp(int(reset)).strftime("%H:%M") + " 后恢复"
+    return message + "；可在服务端配置 GITHUB_TOKEN，或在本机执行 gh auth login"
+
+
+def _request_json_via_gh(url: str):
+    """只读 GET 走已登录的 gh；gh 自带登录身份，不受匿名额度限制。"""
+    parsed = urlsplit(url)
+    executable = shutil.which("gh")
+    if not executable or parsed.scheme != "https" or parsed.netloc != "api.github.com":
+        raise ValueError("GitHub 连接失败；请稍后重试")
+    env = os.environ.copy()
+    for kind, value in getproxies().items():
+        if kind in {"http", "https", "no"}:
+            env[kind + "_proxy"] = value
+            env[kind.upper() + "_PROXY"] = value
+    try:
+        response = subprocess.run([executable, "api", url, "--method", "GET"], env=env,
+                                  capture_output=True, text=True, timeout=30, check=False)
+        if response.returncode != 0:
+            detail = getattr(response, "stderr", "")
+            if "HTTP 403" in detail or "HTTP 429" in detail:
+                raise ValueError(_rate_limit_message(None))
+            if "HTTP 404" in detail:
+                raise ValueError("仓库不存在、不是公开仓库，或当前 Token 无权访问")
+            raise ValueError("GitHub 连接失败，备用只读通道也未成功；请稍后重试")
+        return json.loads(response.stdout)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as fallback_error:
+        raise ValueError("GitHub 只读连接未完成；请稍后重试") from fallback_error
 
 
 def fetch_issues(full_name: str) -> tuple[str, list[dict]]:
