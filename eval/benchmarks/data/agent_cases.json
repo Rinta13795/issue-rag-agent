@@ -1,0 +1,24 @@
+{
+  "benchmark_id": "agent-task-v1",
+  "status": "draft_not_run",
+  "description": "对话调查 Agent 的端到端任务评测：能否顺着 Issue 找到真正的修复 PR，并且不夸大结论。",
+  "case_rules": [
+    "案例用 `python -m eval.benchmarks.agent_tasks build --repository owner/repo` 从 Issue 时间线自动标注生成。",
+    "fixed_merged：Issue 已关闭，且至少一个已合并的关联 PR 用 fix/close/resolve #编号 指向它。",
+    "no_fix：Issue 仍开着，时间线读取成功且没有任何关联 PR；用于检测 Agent 是否夸大成“已修复”。",
+    "证据不明确的 Issue 自动跳过，不硬标。",
+    "自动标注只是草稿：人工抽查无误后把 status 改成 verified，才会进入正式运行。"
+  ],
+  "cases": [
+    {
+      "id": "example/repo#1",
+      "status": "draft_example_only",
+      "repository": "example/repo",
+      "issue_number": 1,
+      "title": "示例，不会执行",
+      "question": "这个问题现在解决了吗？如果解决了，是怎么解决的？请说明依据。",
+      "expected": {"resolution": "fixed_merged", "fix_prs": [2]},
+      "label_source": "github_timeline_auto"
+    }
+  ]
+}
